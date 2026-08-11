@@ -1,0 +1,39 @@
+appId: com.serial.modbus-tool
+productName: 串口Modbus调试工具
+copyright: Copyright © 2024
+
+directories:
+  output: release
+  buildResources: public
+
+files:
+  - dist
+  - dist-electron
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+
+asar: true
+asarUnpack:
+  - "**/*.node"
+  - "node_modules/serialport/**"
+  - "node_modules/@serialport/**"
+
+extraMetadata:
+  main: dist-electron/main.js

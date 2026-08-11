@@ -1,0 +1,6 @@
+# pnpm v11 构建脚本许可配置
+# v11 起 onlyBuiltDependencies 已废弃，改用 allowBuilds，且必须放本文件（.npmrc 不读此设置）
+allowBuilds:
+  - '@serialport/bindings-cpp'
+  - 'electron'
+  - 'esbuild'
