@@ -1,6 +1,7 @@
 # pnpm v11 构建脚本许可配置
-# v11 起 onlyBuiltDependencies 已废弃，改用 allowBuilds，且必须放本文件（.npmrc 不读此设置）
+# 注意：allowBuilds 必须是 map 格式（包名: true），不能是 list！
+# pnpm 源码用 Object.entries(allowBuilds) 读取，list 会被解析为索引键而失效。
 allowBuilds:
-  - '@serialport/bindings-cpp'
-  - 'electron'
-  - 'esbuild'
+  '@serialport/bindings-cpp': true
+  electron: true
+  esbuild: true
