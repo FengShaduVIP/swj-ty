@@ -2,6 +2,11 @@ appId: com.serial.modbus-tool
 productName: 串口Modbus调试工具
 copyright: Copyright © 2024
 
+# 关闭 electron-builder 的原生模块重编译：serialport/bindings-cpp 已通过
+# pnpm install 阶段用预编译 N-API 二进制装好（ABI 稳定，Node/Electron 通用），
+# 无需再 node-gyp 编译。GitHub windows-latest 镜像默认无 VS 编译工具，重编译必失败。
+npmRebuild: false
+
 directories:
   output: release
   buildResources: public
