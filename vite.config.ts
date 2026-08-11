@@ -10,6 +10,10 @@ export default defineConfig({
     electron([
       {
         entry: 'electron/main.ts',
+        // 关闭 @electron/rebuild：serialport/bindings-cpp 已通过 pnpm install
+        // 安装预编译 N-API 二进制（ABI 稳定，Node/Electron 通用），无需重编译。
+        // CI 环境（windows-latest）默认无 VS 编译工具，重编译必失败。
+        rebuild: false,
         vite: {
           build: {
             outDir: 'dist-electron',
