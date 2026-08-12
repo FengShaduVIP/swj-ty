@@ -9,7 +9,7 @@ import {
   buildFactoryPwdModify, buildFactoryPwdClear,
   buildBtPair, buildBtPwdModify, buildHeating,
   parseBasicInfo, parseCellVoltages, parseHardwareVersion, parseProtectCounts, parseInternalRes,
-  PROTECT_BIT, type BasicInfo, type Frame,
+  PROTECT_BIT, ALARM_BIT, type BasicInfo, type Frame,
 } from '@/jbd/jbd-protocol'
 import { jbdBus } from '@/jbd/jbd-bus'
 import { PARAM_TABLE, paramFormat, paramDispUnit, CHIP_TYPES } from '@/jbd/jbd-params'
@@ -65,6 +65,16 @@ const activeProtects = computed(() => {
   const out: string[] = []
   for (let bit = 0; bit <= 15; bit++) {
     if (basicInfo.value.protectStatus & (1 << bit)) out.push(PROTECT_BIT[bit] || `bit${bit}`)
+  }
+  return out
+})
+const activeAlarms = computed(() => {
+  const status = basicInfo.value?.alarmStatus
+  if (status === undefined) return []
+  const out: string[] = []
+  // 仅低 12 bit 有效（与 ALARM_BIT 字典对齐）；预留位忽略
+  for (let bit = 0; bit <= 11; bit++) {
+    if (status & (1 << bit)) out.push(ALARM_BIT[bit] || `bit${bit}`)
   }
   return out
 })
@@ -350,7 +360,7 @@ function handleFrame(f: Frame) {
       ui.live.soc = bi.rsoc
       ui.live.maxTemp_C = bi.temperatures_C.length ? Math.max(...bi.temperatures_C) : null
       ui.live.cellCount = bi.cellCount
-      ui.alarmCount = activeProtects.value.length
+      ui.alarmCount = activeProtects.value.length + activeAlarms.value.length
       recordSample()
       break
     }
@@ -387,7 +397,7 @@ export function useJbd() {
     heatStartTemp, heatStopTemp,
     history, recordTrend, trendMetric,
     // 派生
-    cellMax, cellMin, maxTemp, activeProtects, writableParams,
+    cellMax, cellMin, maxTemp, activeProtects, activeAlarms, writableParams,
     socStatus, socLabel, tempStatus,
     paramRegText, paramNameText, paramRawHex, paramDisplayText, paramAsciiText, paramUnitText,
     protectList, trendSeries, trendUnit, chipTypeName,

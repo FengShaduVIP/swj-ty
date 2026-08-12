@@ -74,14 +74,33 @@
             </div>
           </div>
           <div class="battery-foot">
-            <span class="bf-item">
-              <span class="bf-label">保护状态：</span>
-              <span :class="['bf-val', protectClass]">{{ protectText }}</span>
-            </span>
-            <span class="bf-item">
+            <div class="bf-item bf-item--stack">
+              <div class="bf-label-row">
+                <span class="bf-label">保护状态</span>
+                <span :class="['bf-val', allNormal ? 'state--ok' : 'state--critical']">
+                  {{ allNormal ? '系统正常' : `${activeProtects.length + activeAlarms.length} 条触发` }}
+                </span>
+              </div>
+              <div v-if="allNormal" class="bf-empty">无保护 / 告警事件</div>
+              <div v-else class="chip-row">
+                <span
+                  v-for="p in activeProtects"
+                  :key="`p-${p}`"
+                  class="evt-chip evt-chip--crit"
+                  :title="`protectStatus bit`"
+                >{{ p }}</span>
+                <span
+                  v-for="a in activeAlarms"
+                  :key="`a-${a}`"
+                  class="evt-chip evt-chip--warn"
+                  :title="`alarmStatus bit`"
+                >{{ a }}</span>
+              </div>
+            </div>
+            <div class="bf-item bf-item--inline">
               <span class="bf-label">均衡状态：</span>
               <span :class="['bf-val', balanceClass]">{{ balanceText }}</span>
-            </span>
+            </div>
           </div>
         </section>
 
@@ -183,6 +202,7 @@ const {
   connected, basicInfo, cellVoltages, protectList, cellMax, cellMin,
   maxTemp, socStatus, tempStatus, autoPollProxy, cellClass, fmt, pad,
   chipTypeName, hwVersion,
+  activeProtects, activeAlarms,
   readBasic, readCells, readProtect, readChip, readHw,
 } = j
 
@@ -202,12 +222,11 @@ const mosTemp = computed(() => {
   if (!t.length) return maxTemp.value
   return t[0]
 })
-const protecting      = computed(() => !!j.activeProtects.value.length)
+const protecting      = computed(() => !!(activeProtects.value.length + activeAlarms.value.length))
 const pressureDiff    = computed(() => cellMax.value && cellMin.value ? cellMax.value - cellMin.value : 0)
 
-// 保护 / 均衡文本与色
-const protectText = computed(() => j.activeProtects.value.length ? '保护中' : '正常')
-const protectClass = computed(() => j.activeProtects.value.length ? 'state--critical' : 'state--ok')
+// 保护 / 告警 / 均衡整体状态：全空 → 正常；任一存在 → 异常
+const allNormal      = computed(() => !activeProtects.value.length && !activeAlarms.value.length)
 const balanceText = computed(() => {
   const b = basicInfo.value
   if (!b) return '未启动'
@@ -384,18 +403,45 @@ onUnmounted(() => {
 
 /* 底部保护 / 均衡状态行 */
 .battery-foot {
-  display: flex; align-items: center; gap: var(--space-8);
+  display: flex; align-items: flex-start; gap: var(--space-8);
   padding-top: var(--space-4);
   margin-top: var(--space-4);
   border-top: 1px dashed var(--border-subtle);
+  flex-wrap: wrap;
 }
 .bf-item { display: flex; align-items: center; gap: 4px; font-size: var(--fs-caption); color: var(--text-secondary); }
-.bf-val { font-family: var(--font-mono); font-weight: var(--fw-semibold); }
+.bf-item--stack  { flex-direction: column; align-items: flex-start; gap: 4px; flex: 1 1 360px; min-width: 0; }
+.bf-item--inline { flex: 0 0 auto; }
+.bf-label        { color: var(--text-tertiary); }
+.bf-label-row    { display: flex; align-items: center; gap: var(--space-3); }
+.bf-val          { font-family: var(--font-mono); font-weight: var(--fw-semibold); }
+.bf-empty        { font-size: var(--fs-caption); color: var(--text-tertiary); }
 .state--ok      { color: var(--ok); }
 .state--warning { color: var(--warning); }
 .state--critical{ color: var(--critical); }
 .state--info    { color: var(--info); }
 .state--neutral { color: var(--text-tertiary); }
+
+/* 保护 / 告警 chip 列表（电池底部状态） */
+.chip-row    { display: flex; flex-wrap: wrap; gap: 4px; }
+.evt-chip    {
+  display: inline-flex; align-items: center;
+  height: 18px; padding: 0 6px;
+  font-size: var(--fs-micro); line-height: 1;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.evt-chip--crit {
+  color: var(--critical);
+  background: var(--critical-bg);
+  border-color: var(--critical-border);
+}
+.evt-chip--warn {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
 
 /* ============ 设备信息 ============ */
 .dev-grid {
