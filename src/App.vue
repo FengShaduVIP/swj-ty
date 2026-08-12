@@ -4,7 +4,7 @@
     <header class="app-header">
       <div class="header-left">
         <el-icon :size="24"><Connection /></el-icon>
-        <h1>串口 Modbus 调试工具</h1>
+        <h1>串口调试工具</h1>
       </div>
       <div class="header-right">
         <el-tag :type="connected ? 'success' : 'danger'" effect="dark" size="large">
@@ -19,21 +19,32 @@
         <SerialPanel
           :connected="connected"
           :port-path="portPath"
+          :ports="ports"
+          :logs="dataLogs"
           @connect="handleConnect"
           @disconnect="handleDisconnect"
           @refresh="handleRefreshPorts"
+          @clear="dataLogs = []"
         />
       </div>
       <div class="right-panel">
-        <ModbusPanel
-          ref="modbusPanelRef"
-          :connected="connected"
-          @send="handleSendModbus"
-        />
-        <DataLog
-          :logs="dataLogs"
-          @clear="dataLogs = []"
-        />
+        <el-tabs v-model="activeTab" class="proto-tabs">
+          <el-tab-pane label="JBD BMS" name="jbd">
+            <JbdPanel
+              :connected="connected"
+            />
+          </el-tab-pane>
+          <el-tab-pane label="JBD 宏" name="jbd-macro">
+            <JbdMacro
+              :connected="connected"
+            />
+          </el-tab-pane>
+          <el-tab-pane label="JBD 参数配置" name="jbd-config">
+            <JbdParamConfig
+              :connected="connected"
+            />
+          </el-tab-pane>
+        </el-tabs>
       </div>
     </main>
   </div>
@@ -44,15 +55,18 @@ import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Connection } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
-import ModbusPanel from './components/ModbusPanel.vue'
-import DataLog from './components/DataLog.vue'
+import JbdPanel from './components/JbdPanel.vue'
+import JbdMacro from './components/JbdMacro.vue'
+import JbdParamConfig from './components/JbdParamConfig.vue'
+import { jbdBus } from './jbd/jbd-bus'
 
 // ===== 组件引用 =====
-const modbusPanelRef = ref<InstanceType<typeof ModbusPanel> | null>(null)
+const activeTab = ref('jbd')
 
 // ===== 状态 =====
 const connected = ref(false)
 const portPath = ref('')
+const ports = ref<SerialPortInfo[]>([])
 
 interface LogEntry {
   time: string
@@ -67,7 +81,6 @@ function addLog(type: LogEntry['type'], content: string) {
   const time = now.toLocaleTimeString('zh-CN', { hour12: false }) +
     '.' + now.getMilliseconds().toString().padStart(3, '0')
   dataLogs.value.push({ time, type, content })
-  // 保留最近 500 条
   if (dataLogs.value.length > 500) {
     dataLogs.value = dataLogs.value.slice(-500)
   }
@@ -99,17 +112,19 @@ async function handleDisconnect() {
 
 async function handleRefreshPorts(): Promise<SerialPortInfo[]> {
   try {
-    const ports = await window.serialAPI.listPorts()
-    addLog('info', `刷新串口列表: 找到 ${ports.length} 个串口`)
-    return ports
+    const list = await window.serialAPI.listPorts()
+    ports.value = list
+    addLog('info', `刷新串口列表: 找到 ${list.length} 个串口`)
+    return list
   } catch (err: any) {
     ElMessage.error('获取串口列表失败: ' + (err.message || err))
+    ports.value = []
     return []
   }
 }
 
-// ===== Modbus 收发 =====
-async function handleSendModbus(data: number[]) {
+// ===== 统一发送 =====
+async function handleSend(data: number[]) {
   try {
     await window.serialAPI.send(data)
     const hex = data.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
@@ -122,23 +137,21 @@ async function handleSendModbus(data: number[]) {
 
 // ===== 生命周期 =====
 onMounted(() => {
-  // 监听串口数据
+  // JBD 发送通道：经 App 写串口并记日志
+  jbdBus.setSender((frame) => { handleSend(frame) })
+
+  // 监听串口数据：JBD 统一喂给帧总线
   window.serialAPI.onData((data: number[]) => {
     const hex = data.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
     addLog('recv', `接收: ${hex}`)
 
-    // 自动解析 Modbus 响应
-    if (modbusPanelRef.value) {
-      modbusPanelRef.value.parseReadResponse(data)
-    }
+    jbdBus.feed(data)
   })
 
-  // 监听错误
   window.serialAPI.onError((error: string) => {
     addLog('error', error)
   })
 
-  // 监听状态变化
   window.serialAPI.onStatusChange((status: SerialStatus) => {
     connected.value = status.connected
     portPath.value = status.portPath || ''
@@ -147,6 +160,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.serialAPI.removeAllListeners()
+  jbdBus.clear()
 })
 </script>
 
@@ -194,7 +208,7 @@ onUnmounted(() => {
   width: 360px;
   flex-shrink: 0;
   background: #1a1e24;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .right-panel {
@@ -203,5 +217,33 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+  background: #1a1e24;
+}
+
+.proto-tabs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.proto-tabs :deep(.el-tabs__header) {
+  margin: 0;
+  padding: 0 12px;
+  background: #161a1f;
+}
+.proto-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.proto-tabs :deep(.el-tab-pane) {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.proto-tabs :deep(.el-tab-pane)::-webkit-scrollbar {
+  display: none;
 }
 </style>
