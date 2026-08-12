@@ -7,6 +7,10 @@ copyright: Copyright © 2024
 # 无需再 node-gyp 编译。GitHub windows-latest 镜像默认无 VS 编译工具，重编译必失败。
 npmRebuild: false
 
+# 禁止自动发布：electron-builder 检测到 CI 环境时会尝试发布到 GitHub Releases，
+# 需要 GH_TOKEN。我们只需要本地产出 exe，不需要自动发布。
+publish: null
+
 directories:
   output: release
   buildResources: public

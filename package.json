@@ -1,7 +1,7 @@
 {
   "name": "serial-modbus-tool",
-  "version": "1.0.0",
-  "description": "串口 Modbus 调试工具 - Electron + Element Plus",
+  "version": "1.1.0",
+  "description": "串口调试工具 (JBD BMS) - Electron + Element Plus",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
