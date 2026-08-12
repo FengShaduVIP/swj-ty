@@ -1,0 +1,183 @@
+/* =========================================================================
+ * Element Plus 暗色主题 → VOLTGRID Industrial Dark 对齐覆盖
+ * 必须在 element-plus/theme-chalk/dark/css-vars.css 之后引入。
+ * 目的：让 el-button / el-input / el-select / el-switch / el-tag / el-progress
+ *       等原生组件全部使用 DESIGN.md 的令牌色，消除默认蓝紫/红绿冲突。
+ * ========================================================================= */
+
+.dark {
+  /* ---- 品牌主色（替换 EP 默认蓝）---- */
+  --el-color-primary: #1F6FE0;
+  --el-color-primary-light-3: #2C7BE5;
+  --el-color-primary-light-5: #4A8CEA;
+  --el-color-primary-light-7: #85B3F2;
+  --el-color-primary-light-8: #A9CBF6;
+  --el-color-primary-light-9: rgba(44, 123, 229, 0.12);
+  --el-color-primary-dark-2: #1A5FC8;
+
+  /* ---- 语义色（与 DESIGN.md 一致）---- */
+  --el-color-success: #2FBF71;
+  --el-color-success-light-3: #3ED88A;
+  --el-color-success-light-9: rgba(47, 191, 113, 0.13);
+  --el-color-warning: #EFB33C;
+  --el-color-warning-light-3: #F4C45F;
+  --el-color-warning-light-9: rgba(239, 179, 60, 0.13);
+  --el-color-danger: #F5544E;
+  --el-color-danger-light-3: #F77A75;
+  --el-color-danger-light-9: rgba(245, 84, 78, 0.14);
+  --el-color-error: #F5544E;
+  --el-color-error-light-3: #F77A75;
+  --el-color-error-light-9: rgba(245, 84, 78, 0.14);
+  --el-color-info: #4DA3FF;
+  --el-color-info-light-3: #79BBFF;
+  --el-color-info-light-9: rgba(77, 163, 255, 0.13);
+
+  /* ---- 背景层级 ---- */
+  --el-bg-color: #161B26;          /* surface */
+  --el-bg-color-page: #0B0E14;     /* canvas */
+  --el-bg-color-overlay: #1D2430;  /* raised：下拉/弹层/Tooltip */
+  --el-fill-color-blank: #0D1117;  /* inset：输入框 */
+
+  --el-fill-color: #1D2430;
+  --el-fill-color-light: #1A202B;
+  --el-fill-color-lighter: #161B26;
+  --el-fill-color-dark: #212936;
+  --el-fill-color-darker: #0D1117;
+
+  /* ---- 文本 ---- */
+  --el-text-color-primary: #E8EDF5;
+  --el-text-color-regular: #9FAABD;
+  --el-text-color-secondary: #828E9F;
+  --el-text-color-placeholder: #59636F;
+  --el-text-color-disabled: #59636F;
+
+  /* ---- 边框 ---- */
+  --el-border-color: #2A3240;
+  --el-border-color-light: #1E2633;
+  --el-border-color-lighter: #1E2633;
+  --el-border-color-dark: #3A4454;
+  --el-border-color-extra-light: #1E2633;
+  --el-border-color-hover: #3A4454;
+
+  /* ---- 遮罩 / 字体 ---- */
+  --el-mask-color: rgba(6, 9, 14, 0.72);
+  --el-font-family: var(--font-sans);
+  --el-font-size-base: 13px;
+}
+
+/* ---- 危险按钮默认改为「描边 Danger」（DESIGN 4.2）---- */
+.dark .el-button--danger {
+  --el-button-bg-color: transparent;
+  --el-button-text-color: var(--critical);
+  --el-button-border-color: var(--critical-border);
+  --el-button-hover-bg-color: var(--critical-bg);
+  --el-button-hover-text-color: var(--critical);
+  --el-button-hover-border-color: var(--critical);
+  --el-button-active-bg-color: var(--critical-bg);
+  --el-button-active-text-color: var(--critical);
+  --el-button-disabled-bg-color: var(--bg-raised);
+  --el-button-disabled-text-color: var(--text-disabled);
+  --el-button-disabled-border-color: var(--border-subtle);
+}
+
+/* ---- 输入框：聚焦环用品牌蓝（DESIGN 4.3）---- */
+.dark .el-input__wrapper,
+.dark .el-textarea__inner {
+  background-color: var(--bg-inset);
+  box-shadow: 0 0 0 1px var(--border-default) inset;
+}
+.dark .el-input__wrapper.is-focus,
+.dark .el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--border-brand) inset, var(--ring-focus);
+}
+.dark .el-input-number__decrease,
+.dark .el-input-number__increase {
+  background-color: var(--bg-raised);
+  color: var(--text-secondary);
+  border-color: var(--border-default);
+}
+
+/* ---- 下拉面板 / 弹层（DESIGN 4.3/4.9）---- */
+.dark .el-select-dropdown__item.is-hovering,
+.dark .el-select-dropdown__item:hover {
+  background-color: var(--bg-hover);
+}
+.dark .el-popper.is-light,
+.dark .el-popper {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+}
+
+/* ---- 卡片：去默认白边，交给 scoped 样式控制 surface ---- */
+.dark .el-card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+}
+
+/* ---- 表格（DESIGN 4.4）---- */
+.dark .el-table {
+  --el-table-bg-color: var(--bg-surface);
+  --el-table-tr-bg-color: var(--bg-surface);
+  --el-table-header-bg-color: var(--bg-raised);
+  --el-table-border-color: var(--border-subtle);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  --el-table-text-color: var(--text-primary);
+  --el-table-header-text-color: var(--text-secondary);
+}
+
+/* =========================================================================
+ * 全局工具类（DESIGN 9.1：数值全部走 .num）
+ * ========================================================================= */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums slashed-zero;
+  text-align: right;
+  font-feature-settings: var(--font-numeric-features);
+}
+.unit {
+  font-size: var(--fs-micro);
+  color: var(--text-secondary);
+  margin-left: var(--space-2);
+}
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+/* 面板（= 数据卡片/表面容器，DESIGN 4.1/4.8）统一基类 */
+.panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+}
+.panel-title .el-icon,
+.panel-title svg { color: var(--brand); }
+
+/* 区块标题标签（全大写或加粗中文，DESIGN 3.2 --fs-label）*/
+.eyebrow {
+  font-size: var(--fs-label);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+/* 聚焦可见性（DESIGN 9.1 / 可访问性）*/
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+/* 减少动效偏好：关闭所有告警闪烁/呼吸/流动（DESIGN 9.1）*/
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

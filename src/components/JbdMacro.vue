@@ -1,107 +1,108 @@
 <template>
   <div class="macro-panel">
     <!-- ============ 说明 + 运行 ============ -->
-    <el-card class="sec" shadow="never">
-      <template #header>
-        <span class="sec-title"><el-icon><Files /></el-icon> 批量指令宏（产线）</span>
-        <el-button size="small" type="success" :disabled="!connected || running" @click="runMacro">
-          <el-icon><VideoPlay /></el-icon> 运行
-        </el-button>
-        <el-button size="small" type="danger" :disabled="!running" @click="stopMacro">
-          <el-icon><VideoPause /></el-icon> 停止
-        </el-button>
-        <span class="sub">顺序执行，等待每步响应（超时 {{ stepTimeout }}ms）</span>
-      </template>
-
-      <div class="macro-actions">
-        <span class="lbl">添加步骤：</span>
-        <el-button v-for="t in TYPE_OPTIONS" :key="t.type" size="small" plain @click="addStep(t.type)">{{ t.label }}</el-button>
-      </div>
-
-      <div class="macro-actions" style="margin-top: 8px">
-        <el-input v-model="presetName" size="small" placeholder="预设名称" style="width: 160px" />
-        <el-button size="small" @click="savePreset"><el-icon><Collection /></el-icon> 存为预设</el-button>
-        <el-select v-model="presetSel" size="small" placeholder="载入预设" style="width: 160px" @change="loadPreset">
-          <el-option v-for="(v, k) in presets" :key="k" :label="k" :value="k" />
-        </el-select>
-        <el-button size="small" @click="loadSample"><el-icon><MagicStick /></el-icon> 示例模板</el-button>
-        <el-button size="small" @click="exportJson"><el-icon><Download /></el-icon> 导出JSON</el-button>
-        <el-button size="small" @click="fileInput?.click()"><el-icon><Upload /></el-icon> 导入JSON</el-button>
-        <el-button size="small" type="info" text @click="clearSteps">清空</el-button>
-        <input ref="fileInput" type="file" accept=".json,application/json" style="display:none" @change="importJson" />
-      </div>
-    </el-card>
-
-    <!-- ============ 步骤列表 ============ -->
-    <el-card class="sec" shadow="never" v-if="steps.length">
-      <template #header><span class="sec-title">步骤序列（{{ steps.length }} 步）</span></template>
-      <div v-for="(s, i) in steps" :key="s.id" class="step-row">
-        <span class="step-idx">{{ i + 1 }}</span>
-        <el-tag :type="statusTag(statuses[i])" size="small" class="step-st">{{ statusText(statuses[i]) }}</el-tag>
-
-        <el-select v-model="s.type" size="small" style="width: 130px" @change="onTypeChange(s)">
-          <el-option v-for="t in TYPE_OPTIONS" :key="t.type" :label="t.label" :value="t.type" />
-        </el-select>
-
-        <!-- 读取参数 -->
-        <template v-if="s.type === 'read-param'">
-          <el-select v-model="s.reg" size="small" filterable placeholder="参数" style="width: 220px">
-            <el-option v-for="p in PARAM_TABLE" :key="p.index" :label="`[${p.index}] ${p.name}`" :value="p.index" />
+    <section class="panel sec">
+      <header class="sec-h">
+        <span class="panel-title"><el-icon><Files /></el-icon> 批量指令宏（产线）</span>
+        <div class="sec-actions">
+          <el-button size="small" type="success" :disabled="!connected || running" @click="runMacro">
+            <el-icon><VideoPlay /></el-icon> 运行
+          </el-button>
+          <el-button size="small" type="danger" :disabled="!running" @click="stopMacro">
+            <el-icon><VideoPause /></el-icon> 停止
+          </el-button>
+          <span class="sub">顺序执行，等待每步响应（超时 {{ stepTimeout }}ms）</span>
+        </div>
+      </header>
+      <div class="sec-b">
+        <div class="macro-actions">
+          <span class="lbl">添加步骤：</span>
+          <el-button v-for="t in TYPE_OPTIONS" :key="t.type" size="small" plain @click="addStep(t.type)">{{ t.label }}</el-button>
+        </div>
+        <div class="macro-actions" style="margin-top: var(--space-3)">
+          <el-input v-model="presetName" size="small" placeholder="预设名称" style="width: 160px" />
+          <el-button size="small" @click="savePreset"><el-icon><Collection /></el-icon> 存为预设</el-button>
+          <el-select v-model="presetSel" size="small" placeholder="载入预设" style="width: 160px" @change="loadPreset">
+            <el-option v-for="(v, k) in presets" :key="k" :label="k" :value="k" />
           </el-select>
-          <span class="tip">数量</span>
-          <el-input-number v-model="s.count" :min="1" :max="95" size="small" controls-position="right" style="width: 100px" />
-        </template>
-
-        <!-- 写入参数 -->
-        <template v-else-if="s.type === 'write-param'">
-          <el-select v-model="s.reg" size="small" filterable placeholder="参数" style="width: 220px">
-            <el-option v-for="p in writableParams" :key="p.index" :label="`[${p.index}] ${p.name}`" :value="p.index" />
-          </el-select>
-          <span class="tip">值</span>
-          <el-input-number v-model="s.value" :min="0" :max="65535" size="small" controls-position="right" style="width: 130px" />
-          <el-checkbox v-model="s.autoFactory" size="small">自动进出工厂</el-checkbox>
-        </template>
-
-        <!-- 控制指令 -->
-        <template v-else-if="s.type === 'control'">
-          <el-select v-model="s.func" size="small" placeholder="指令" style="width: 160px">
-            <el-option v-for="o in CONTROL_OPTIONS" :key="o.label" :label="o.label" :value="o.fn" />
-          </el-select>
-        </template>
-
-        <!-- MOS 控制 -->
-        <template v-else-if="s.type === 'mos'">
-          <el-select v-model="s.mosType" size="small" style="width: 130px">
-            <el-option v-for="o in MOS_OPTIONS" :key="o.label" :label="o.label" :value="o.val" />
-          </el-select>
-          <el-switch v-model="s.mosOpen" size="small" active-text="开" inactive-text="关" inline-prompt />
-        </template>
-
-        <!-- 延时 -->
-        <template v-else-if="s.type === 'delay'">
-          <el-input-number v-model="s.ms" :min="0" :max="60000" :step="100" size="small" controls-position="right" style="width: 130px" />
-          <span class="tip">ms</span>
-        </template>
-
-        <span class="step-desc">{{ stepDesc(s) }}</span>
-
-        <div class="step-ops">
-          <el-button size="small" text :disabled="i === 0" @click="move(i, -1)"><el-icon><Top /></el-icon></el-button>
-          <el-button size="small" text :disabled="i === steps.length - 1" @click="move(i, 1)"><el-icon><Bottom /></el-icon></el-button>
-          <el-button size="small" text type="danger" @click="remove(i)"><el-icon><Delete /></el-icon></el-button>
+          <el-button size="small" @click="loadSample"><el-icon><MagicStick /></el-icon> 示例模板</el-button>
+          <el-button size="small" @click="exportJson"><el-icon><Download /></el-icon> 导出JSON</el-button>
+          <el-button size="small" @click="fileInput?.click()"><el-icon><Upload /></el-icon> 导入JSON</el-button>
+          <el-button size="small" type="info" text @click="clearSteps">清空</el-button>
+          <input ref="fileInput" type="file" accept=".json,application/json" style="display:none" @change="importJson" />
         </div>
       </div>
-    </el-card>
+    </section>
+
+    <!-- ============ 步骤列表 ============ -->
+    <section class="panel sec" v-if="steps.length">
+      <header class="sec-h"><span class="panel-title">步骤序列（{{ steps.length }} 步）</span></header>
+      <div class="sec-b">
+        <div v-for="(s, i) in steps" :key="s.id" class="step-row">
+          <span class="step-idx">{{ i + 1 }}</span>
+          <StatusBadge :status="stepStatus(s)" :label="statusText(statuses[i])" />
+
+          <el-select v-model="s.type" size="small" style="width: 130px" @change="onTypeChange(s)">
+            <el-option v-for="t in TYPE_OPTIONS" :key="t.type" :label="t.label" :value="t.type" />
+          </el-select>
+
+          <template v-if="s.type === 'read-param'">
+            <el-select v-model="s.reg" size="small" filterable placeholder="参数" style="width: 220px">
+              <el-option v-for="p in PARAM_TABLE" :key="p.index" :label="`[${p.index}] ${p.name}`" :value="p.index" />
+            </el-select>
+            <span class="tip">数量</span>
+            <el-input-number v-model="s.count" :min="1" :max="95" size="small" controls-position="right" style="width: 100px" />
+          </template>
+
+          <template v-else-if="s.type === 'write-param'">
+            <el-select v-model="s.reg" size="small" filterable placeholder="参数" style="width: 220px">
+              <el-option v-for="p in writableParams" :key="p.index" :label="`[${p.index}] ${p.name}`" :value="p.index" />
+            </el-select>
+            <span class="tip">值</span>
+            <el-input-number v-model="s.value" :min="0" :max="65535" size="small" controls-position="right" style="width: 130px" />
+            <el-checkbox v-model="s.autoFactory" size="small">自动进出工厂</el-checkbox>
+          </template>
+
+          <template v-else-if="s.type === 'control'">
+            <el-select v-model="s.func" size="small" placeholder="指令" style="width: 160px">
+              <el-option v-for="o in CONTROL_OPTIONS" :key="o.label" :label="o.label" :value="o.fn" />
+            </el-select>
+          </template>
+
+          <template v-else-if="s.type === 'mos'">
+            <el-select v-model="s.mosType" size="small" style="width: 130px">
+              <el-option v-for="o in MOS_OPTIONS" :key="o.label" :label="o.label" :value="o.val" />
+            </el-select>
+            <el-switch v-model="s.mosOpen" size="small" active-text="开" inactive-text="关" inline-prompt />
+          </template>
+
+          <template v-else-if="s.type === 'delay'">
+            <el-input-number v-model="s.ms" :min="0" :max="60000" :step="100" size="small" controls-position="right" style="width: 130px" />
+            <span class="tip">ms</span>
+          </template>
+
+          <span class="step-desc">{{ stepDesc(s) }}</span>
+
+          <div class="step-ops">
+            <el-button size="small" text :disabled="i === 0" @click="move(i, -1)"><el-icon><Top /></el-icon></el-button>
+            <el-button size="small" text :disabled="i === steps.length - 1" @click="move(i, 1)"><el-icon><Bottom /></el-icon></el-button>
+            <el-button size="small" text type="danger" @click="remove(i)"><el-icon><Delete /></el-icon></el-button>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <!-- ============ 运行结果 ============ -->
-    <el-card class="sec" shadow="never">
-      <template #header>
-        <span class="sec-title">运行结果</span>
-        <el-button size="small" text type="info" @click="results = []">清空</el-button>
-      </template>
-      <div v-if="!results.length" class="tip">运行后此处显示每步响应与读数</div>
-      <div v-for="(r, i) in results" :key="i" class="res-line mono">{{ r }}</div>
-    </el-card>
+    <section class="panel sec">
+      <header class="sec-h">
+        <span class="panel-title">运行结果</span>
+        <el-button size="small" text type="info" style="margin-left:auto" @click="results = []">清空</el-button>
+      </header>
+      <div class="sec-b">
+        <div v-if="!results.length" class="tip">运行后此处显示每步响应与读数</div>
+        <div v-for="(r, i) in results" :key="i" class="res-line mono">{{ r }}</div>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -121,6 +122,7 @@ import {
   parseBasicInfo, type Frame,
 } from '@/jbd/jbd-protocol'
 import { PARAM_TABLE } from '@/jbd/jbd-params'
+import StatusBadge from './StatusBadge.vue'
 
 const props = defineProps<{ connected: boolean }>()
 
@@ -129,16 +131,8 @@ type StepType =
   | 'control' | 'mos' | 'enter-factory' | 'exit-factory' | 'delay'
 
 interface MacroStep {
-  id: number
-  type: StepType
-  reg: number
-  count: number
-  value: number
-  autoFactory: boolean
-  func: readonly number[]
-  mosType: number
-  mosOpen: boolean
-  ms: number
+  id: number; type: StepType; reg: number; count: number; value: number; autoFactory: boolean
+  func: readonly number[]; mosType: number; mosOpen: boolean; ms: number
 }
 
 const TYPE_OPTIONS = [
@@ -181,7 +175,6 @@ const statuses = ref<('idle' | 'running' | 'ok' | 'fail' | 'timeout')[]>([])
 const results = ref<string[]>([])
 const running = ref(false)
 
-// 预设（localStorage）
 const PRESET_KEY = 'jbd_macro_presets'
 const presets = ref<Record<string, MacroStep[]>>(loadPresets())
 const presetName = ref('')
@@ -217,7 +210,6 @@ function move(i: number, dir: number) {
   ;[st[i], st[j]] = [st[j], st[i]]
 }
 function onTypeChange(s: MacroStep) {
-  // 切换类型时复位相关字段到合理默认
   if (s.type === 'write-param') { s.reg = s.reg || 2 }
 }
 
@@ -231,17 +223,18 @@ function stepDesc(s: MacroStep): string {
     default: return ''
   }
 }
-function statusTag(s?: string): 'info' | 'warning' | 'success' | 'danger' {
-  if (s === 'running') return 'warning'
-  if (s === 'ok') return 'success'
-  if (s === 'fail' || s === 'timeout') return 'danger'
-  return 'info'
+// 步骤状态 → 三通道徽标（DESIGN 4.6）
+function stepStatus(s: MacroStep): 'neutral' | 'info' | 'ok' | 'critical' {
+  const st = statuses.value[steps.value.indexOf(s)]
+  if (st === 'running') return 'info'
+  if (st === 'ok') return 'ok'
+  if (st === 'fail' || st === 'timeout') return 'critical'
+  return 'neutral'
 }
 function statusText(s?: string): string {
   return ({ idle: '待', running: '执行中', ok: '成功', fail: '失败', timeout: '超时' } as Record<string, string>)[s || 'idle'] || '待'
 }
 
-// ===== 构建单步帧 =====
 function buildStepFrame(s: MacroStep): number[] | null {
   switch (s.type) {
     case 'read-basic': return buildReadBasicInfo()
@@ -256,7 +249,7 @@ function buildStepFrame(s: MacroStep): number[] | null {
     case 'mos': return buildControlMOS(s.mosType, s.mosOpen ? MOS_ACTION.RELEASE : MOS_ACTION.CLOSE)
     case 'enter-factory': return buildEnterFactory()
     case 'exit-factory': return buildExitFactory()
-    default: return null // delay
+    default: return null
   }
 }
 
@@ -283,7 +276,6 @@ async function runMacro() {
       continue
     }
 
-    // 写参数：按需自动进出工厂模式
     if (s.type === 'write-param' && s.autoFactory) {
       jbdBus.send(buildEnterFactory())
       const er = await jbdBus.onceResponse(stepTimeout, 0x00)
@@ -340,7 +332,6 @@ async function handleResponse(i: number, s: MacroStep, tag: string, resp: Frame)
   }
 }
 
-// ===== 预设 / 文件 =====
 function savePreset() {
   const name = presetName.value.trim()
   if (!name) { ElMessage.warning('请填写预设名称'); return }
@@ -370,7 +361,6 @@ function loadSample() {
     (() => { const s = defaultStep('write-param'); s.reg = 2; s.value = 3650; s.autoFactory = true; return s })(),
     defaultStep('control'),
   ]
-  // 示例控制设为「重置容量」
   steps.value[5].func = CONTROL_FUNC.RESET_CAPACITY
   statuses.value = steps.value.map(() => 'idle')
   ElMessage.info('已载入示例：读基本信息/单体电压/内阻 → 读参数0 → 写参数2=3650 → 重置容量')
@@ -392,7 +382,6 @@ function importJson(e: Event) {
     try {
       const parsed = JSON.parse(reader.result as string) as MacroStep[]
       if (!Array.isArray(parsed)) throw new Error('格式错误')
-      // 规整 id，避免冲突
       parsed.forEach((p) => { p.id = nextId++ })
       steps.value = parsed
       statuses.value = steps.value.map(() => 'idle')
@@ -410,30 +399,47 @@ function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)) }
 
 <style scoped>
 .macro-panel {
-  padding: 16px;
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-6);
   overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 .macro-panel > * { min-width: 0; }
-.sec { background: #1a1e24; border: 1px solid #2a2e34; }
-.sec :deep(.el-card__header) { padding: 10px 14px; border-bottom: 1px solid #2a2e34; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sec-title { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: #f0f1f2; }
-.sec-title .el-icon { color: #00BFA5; }
-.sub { font-size: 12px; color: #8a8e94; margin-left: auto; }
-.macro-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.macro-actions .lbl { font-size: 13px; color: #b0b4ba; }
-.step-row {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 8px; border: 1px solid #2a2e34; border-radius: 6px; margin-bottom: 8px;
-  background: #0c0e10;
+
+.sec { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); }
+.sec-h {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-default);
+  flex-wrap: wrap;
 }
-.step-idx { width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 50%; background: #2a2e34; color: #c0c4ca; font-size: 12px; flex-shrink: 0; }
-.step-st { width: 56px; text-align: center; flex-shrink: 0; }
-.step-desc { font-size: 12px; color: #8a8e94; margin-left: 4px; }
-.step-ops { margin-left: auto; display: flex; gap: 2px; }
-.tip { font-size: 12px; color: #6a6e74; }
-.res-line { font-size: 12px; color: #c0c4ca; padding: 3px 0; border-bottom: 1px solid #1a1e24; font-family: 'JetBrains Mono', monospace; }
-.mono { font-family: 'JetBrains Mono', monospace; }
+.sec-b { padding: var(--space-5); }
+.sec-actions { margin-left: auto; display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.sub { font-size: var(--fs-caption); color: var(--text-tertiary); }
+
+.macro-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.macro-actions .lbl { font-size: var(--fs-body-sm); color: var(--text-secondary); }
+
+.step-row {
+  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-3);
+  background: var(--bg-inset);
+}
+.step-idx {
+  width: 22px; height: 22px; line-height: 22px; text-align: center;
+  border-radius: var(--radius-pill); background: var(--bg-raised); color: var(--text-secondary);
+  font-size: var(--fs-micro); font-weight: var(--fw-semibold); flex-shrink: 0;
+}
+.step-desc { font-size: var(--fs-caption); color: var(--text-tertiary); margin-left: var(--space-2); }
+.step-ops { margin-left: auto; display: flex; gap: var(--space-1); }
+.tip { font-size: var(--fs-caption); color: var(--text-tertiary); }
+.res-line { font-size: var(--fs-caption); color: var(--text-secondary); padding: var(--space-1) 0; border-bottom: 1px solid var(--border-subtle); font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; }
 </style>

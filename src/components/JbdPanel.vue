@@ -1,549 +1,540 @@
+<!--
+  JbdPanel — 实时监测（只读）
+  布局严格对齐参考图：
+    左列：电池概览（图标 + 7 项读数 + 保护/均衡状态）+ 保护事件表
+    右列：单体电压栅格（4×6，24 cell）+ 温度（圆环 + 温度条）
+-->
 <template>
-  <div class="jbd-panel">
-    <!-- ============ 实时读取 ============ -->
-    <el-card class="sec" shadow="never">
-      <template #header><span class="sec-title"><el-icon><Refresh /></el-icon> 实时读取</span></template>
-      <div class="btn-grid">
-        <el-button size="small" :disabled="!connected" @click="readBasic">基本信息</el-button>
-        <el-button size="small" :disabled="!connected" @click="readCells">单体电压</el-button>
-        <el-button size="small" :disabled="!connected" @click="readHw">硬件版本</el-button>
-        <el-button size="small" :disabled="!connected" @click="readProtect">保护次数</el-button>
-        <el-button size="small" :disabled="!connected" @click="readChip">芯片类型</el-button>
-        <el-button size="small" :disabled="!connected" @click="readRes">电池内阻</el-button>
-      </div>
-      <div class="poll-row">
-        <el-switch v-model="autoPollProxy" size="small" active-text="自动轮询(2s)" @change="onPollChange" />
-        <span class="tip">注：保护板休眠时首帧常无响应，需重发</span>
-      </div>
-    </el-card>
+  <div class="jbd-panel monitor">
+    <!-- ===== 顶部工具栏 ===== -->
+    <div class="vp-toolbar">
+      <el-checkbox v-model="autoPollProxy" @change="onPollChange">自动轮询 (2s)</el-checkbox>
+      <el-checkbox v-model="readProtectOnPoll" @change="scheduleProtectRead" />
+      <span class="vp-meta">同步保护事件</span>
+      <span class="vp-spacer" />
+      <span class="vp-meta num" v-if="lastPoll">{{ lastPoll }} 已拉取</span>
+      <el-button @click="refreshAll" :icon="Refresh">读取全部</el-button>
+    </div>
 
-    <!-- ============ 趋势曲线 ============ -->
-    <el-card class="sec" shadow="never">
-      <template #header>
-        <span class="sec-title"><el-icon><TrendCharts /></el-icon> 趋势曲线</span>
-        <span class="sub">已采样 {{ history.length }} 点</span>
-        <el-switch v-model="recordTrend" size="small" active-text="记录" inline-prompt style="margin-left: 10px" />
-        <el-button size="small" text type="info" style="margin-left: 6px" @click="clearTrend">清空</el-button>
-      </template>
-      <div class="param-row" style="margin-bottom: 8px">
-        <el-radio-group v-model="trendMetric" size="small">
-          <el-radio-button value="overview">总览</el-radio-button>
-          <el-radio-button value="pack">总压/电流</el-radio-button>
-          <el-radio-button value="cells">单体电压</el-radio-button>
-          <el-radio-button value="temps">温度</el-radio-button>
-        </el-radio-group>
-      </div>
-      <LineChart :series="trendSeries" :y-unit="trendUnit" :height="160" :fill="trendMetric === 'overview' || trendMetric === 'pack'" />
-      <div class="legend" v-if="trendSeries.length">
-        <span v-for="s in trendSeries" :key="s.name" class="lg-item">
-          <i :style="{ background: s.color }"></i>{{ s.name }}
-        </span>
-      </div>
-    </el-card>
+    <!-- ===== 双列主内容 ===== -->
+    <div class="monitor-grid">
+      <!-- ============== 左列 ============== -->
+      <div class="col">
+        <!-- 电池概览卡 -->
+        <section class="sec battery-sec">
+          <div class="battery-row">
+            <BatteryMeter :soc="rsoc" :status="socStatus" />
+            <div class="battery-info">
+              <div class="info-grid">
+                <div class="kv">
+                  <span class="kv-label">总电压</span>
+                  <span class="kv-num">
+                    <span class="num">{{ fmt(totalV, 2) }}</span>
+                    <span class="kv-unit">V</span>
+                  </span>
+                </div>
+                <div class="kv">
+                  <span class="kv-label">循环次数</span>
+                  <span class="kv-num">
+                    <span class="num">{{ cycleCount }}</span>
+                    <span class="kv-unit">次</span>
+                  </span>
+                </div>
+                <div class="kv">
+                  <span class="kv-label">电流</span>
+                  <span class="kv-num" :class="{ 'kv--neg': currentA < 0 }">
+                    <span class="num">{{ fmt(currentA, 2) }}</span>
+                    <span class="kv-unit">A</span>
+                  </span>
+                </div>
+                <div class="kv">
+                  <span class="kv-label">剩余容量</span>
+                  <span class="kv-num">
+                    <span class="num">{{ fmt(remainAh, 2) }}</span>
+                    <span class="kv-unit">AH</span>
+                  </span>
+                </div>
+                <div class="kv">
+                  <span class="kv-label">负载功率</span>
+                  <span class="kv-num">
+                    <span class="num">{{ fmt(powerW, 2) }}</span>
+                    <span class="kv-unit">W</span>
+                  </span>
+                </div>
+                <div class="kv kv--empty" />
+                <div class="kv kv--toggle">
+                  <span class="kv-label">充电开关</span>
+                  <el-switch :model-value="chargeSwitch" disabled size="default" />
+                </div>
+                <div class="kv kv--toggle">
+                  <span class="kv-label">放电开关</span>
+                  <el-switch :model-value="dischargeSwitch" disabled size="default" />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="battery-foot">
+            <span class="bf-item">
+              <span class="bf-label">保护状态：</span>
+              <span :class="['bf-val', protectClass]">{{ protectText }}</span>
+            </span>
+            <span class="bf-item">
+              <span class="bf-label">均衡状态：</span>
+              <span :class="['bf-val', balanceClass]">{{ balanceText }}</span>
+            </span>
+          </div>
+        </section>
 
-    <!-- ============ 基本信息 ============ -->
-    <el-card v-if="basicInfo" class="sec" shadow="never">
-      <template #header><span class="sec-title"><el-icon><DataBoard /></el-icon> 基本信息</span></template>
-      <div class="stat-grid">
-        <div class="stat"><span class="k">总电压</span><span class="v">{{ (basicInfo.totalVoltage_mV / 1000).toFixed(2) }} V</span></div>
-        <div class="stat"><span class="k">电流</span><span class="v" :class="basicInfo.current_mA < 0 ? 'neg' : 'pos'">{{ (basicInfo.current_mA / 1000).toFixed(2) }} A</span></div>
-        <div class="stat"><span class="k">SOC</span><span class="v">{{ basicInfo.rsoc }} %</span></div>
-        <div class="stat"><span class="k">剩余容量</span><span class="v">{{ (basicInfo.remainingCapacity_mAh / 1000).toFixed(2) }} Ah</span></div>
-        <div class="stat"><span class="k">标称容量</span><span class="v">{{ (basicInfo.nominalCapacity_mAh / 1000).toFixed(2) }} Ah</span></div>
-        <div class="stat"><span class="k">循环次数</span><span class="v">{{ basicInfo.cycleCount }}</span></div>
-        <div class="stat"><span class="k">软件版本</span><span class="v">V{{ basicInfo.swVersion }}</span></div>
-        <div class="stat"><span class="k">电池串数</span><span class="v">{{ basicInfo.cellCount }}</span></div>
-        <div class="stat"><span class="k">NTC 数</span><span class="v">{{ basicInfo.ntcCount }}</span></div>
-        <div class="stat"><span class="k">生产日期</span><span class="v">{{ basicInfo.manufactureDate.year }}-{{ basicInfo.manufactureDate.month }}-{{ basicInfo.manufactureDate.day }}</span></div>
-        <div class="stat"><span class="k">温度</span><span class="v">{{ basicInfo.temperatures_C.map(t => t.toFixed(1)).join(' / ') }} ℃</span></div>
-      </div>
-      <div class="tag-row">
-        <span class="lbl">MOS：</span>
-        <el-tag :type="basicInfo.fet.charge ? 'success' : 'danger'" size="small">充电{{ basicInfo.fet.charge ? '开' : '关' }}</el-tag>
-        <el-tag :type="basicInfo.fet.discharge ? 'success' : 'danger'" size="small">放电{{ basicInfo.fet.discharge ? '开' : '关' }}</el-tag>
-        <el-tag v-if="basicInfo.fet.heating" type="warning" size="small">加热中</el-tag>
-        <el-tag v-if="basicInfo.fet.currentLimit" type="info" size="small">限流</el-tag>
-      </div>
-      <div class="tag-row">
-        <span class="lbl">保护：</span>
-        <template v-if="activeProtects.length">
-          <el-tag v-for="b in activeProtects" :key="b" type="danger" size="small">{{ b }}</el-tag>
-        </template>
-        <el-tag v-else type="success" size="small">正常</el-tag>
-      </div>
-    </el-card>
+        <!-- 设备信息 -->
+        <section class="sec dev-sec">
+          <header class="sec-head">
+            <h3 class="sec-title">设备信息</h3>
+          </header>
+          <div class="dev-grid">
+            <div class="kv">
+              <span class="kv-label">芯片类型</span>
+              <span class="kv-val mono">{{ chipTypeName }}</span>
+            </div>
+            <div class="kv">
+              <span class="kv-label">硬件版本</span>
+              <span class="kv-val mono">{{ hwVersion || '—' }}</span>
+            </div>
+          </div>
+        </section>
 
-    <!-- ============ 单体电压 ============ -->
-    <el-card v-if="cellVoltages.length" class="sec" shadow="never">
-      <template #header>
-        <span class="sec-title"><el-icon><Operation /></el-icon> 单体电压 ({{ cellVoltages.length }} 串)</span>
-        <span class="sub">最高 {{ (cellMax / 1000).toFixed(3) }}V · 最低 {{ (cellMin / 1000).toFixed(3) }}V · 压差 {{ ((cellMax - cellMin) / 1000).toFixed(3) }}V</span>
-      </template>
-      <div class="cell-grid">
-        <div v-for="(v, i) in cellVoltages" :key="i" class="cell" :style="{ borderColor: cellColor(v) }">
-          <span class="cell-idx">{{ i + 1 }}</span>
-          <span class="cell-v" :style="{ color: cellColor(v) }">{{ (v / 1000).toFixed(3) }}</span>
-        </div>
-      </div>
-    </el-card>
-
-    <!-- ============ 内阻 ============ -->
-    <el-card v-if="internalRes.length" class="sec" shadow="never">
-      <template #header><span class="sec-title"><el-icon><Histogram /></el-icon> 电池内阻 (0.1mR)</span></template>
-      <div class="cell-grid">
-        <div v-for="(v, i) in internalRes" :key="i" class="cell">
-          <span class="cell-idx">{{ i + 1 }}</span>
-          <span class="cell-v">{{ v / 10 }}</span>
-        </div>
-      </div>
-    </el-card>
-
-    <!-- ============ MOS 控制 ============ -->
-    <el-card class="sec" shadow="never">
-      <template #header><span class="sec-title"><el-icon><Switch /></el-icon> MOS 控制</span></template>
-      <div class="mos-row">
-        <div class="mos-item">
-          <span>充电 MOS</span>
-          <el-switch :model-value="basicInfo?.fet.charge ?? false" :disabled="!connected"
-            active-text="开" inactive-text="关" @change="(v: any) => setMos(MOS_TYPE.CHARGE, v)" />
-        </div>
-        <div class="mos-item">
-          <span>放电 MOS</span>
-          <el-switch :model-value="basicInfo?.fet.discharge ?? false" :disabled="!connected"
-            active-text="开" inactive-text="关" @change="(v: any) => setMos(MOS_TYPE.DISCHARGE, v)" />
-        </div>
-        <div class="mos-item btn-group">
-          <el-button size="small" :disabled="!connected" @click="setMosBoth(false)">全部关闭</el-button>
-          <el-button size="small" type="success" :disabled="!connected" @click="setMosBoth(true)">全部打开</el-button>
-        </div>
-      </div>
-    </el-card>
-
-    <!-- ============ 控制指令 ============ -->
-    <el-card class="sec" shadow="never">
-      <template #header><span class="sec-title"><el-icon><MagicStick /></el-icon> 控制指令 (0x0A)</span></template>
-      <div class="btn-grid">
-        <el-button v-for="c in controlButtons" :key="c.label" size="small" :disabled="!connected" @click="runControl(c.fn)">
-          {{ c.label }}
-        </el-button>
-      </div>
-    </el-card>
-
-    <!-- ============ 参数读写 ============ -->
-    <el-card class="sec" shadow="never">
-      <template #header>
-        <span class="sec-title"><el-icon><Setting /></el-icon> 参数读写 (0xFA)</span>
-        <el-tag :type="inFactory ? 'success' : 'info'" size="small">{{ inFactory ? '工厂模式' : '普通模式' }}</el-tag>
-      </template>
-
-      <div class="param-row">
-        <el-button size="small" :type="inFactory ? 'success' : 'primary'" :disabled="!connected" @click="enterFactory">进入工厂模式</el-button>
-        <el-button size="small" :disabled="!connected || !inFactory" @click="exitFactory">退出工厂模式</el-button>
+        <!-- 保护事件表 -->
+        <section class="sec events-sec">
+          <header class="sec-head">
+            <h3 class="sec-title">保护事件次数</h3>
+            <button class="refresh-mini" :title="protecting ? '点击刷新' : '拉取保护事件'" @click="readProtect">
+              <svg viewBox="0 0 12 12"><path d="M2 6a4 4 0 1 1 1.2 2.83M3 9 2 6 5 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </header>
+          <div class="events-grid">
+            <div v-for="e in protectList" :key="e.key" class="evt-row">
+              <span class="evt-name">{{ e.label }}</span>
+              <span class="evt-count">
+                <span class="num">{{ e.count ?? '-' }}</span>
+                <span class="evt-unit">次</span>
+              </span>
+            </div>
+          </div>
+        </section>
       </div>
 
-      <el-divider content-position="left">读取</el-divider>
-      <div class="param-row">
-        <el-select v-model="paramReg" size="small" filterable placeholder="选择参数" style="flex: 1" :disabled="!connected">
-          <el-option v-for="p in PARAM_TABLE" :key="p.index" :label="`[${p.index}] ${p.name}${p.unit ? ' (' + p.unit + ')' : ''}`" :value="p.index" />
-        </el-select>
-        <el-input-number v-model="paramCount" :min="1" :max="95" size="small" controls-position="right" style="width: 110px" />
-        <el-button size="small" type="primary" :disabled="!connected" @click="readParam">读取</el-button>
-      </div>
-      <div v-if="paramResult" class="param-result">
-        <div>寄存器 [{{ paramRegText }}] {{ paramNameText }}：</div>
-        <div class="mono">原始: {{ paramRawHex }}</div>
-        <div class="mono" v-if="paramDisplayText">数值: {{ paramDisplayText }} {{ paramUnitText }}</div>
-        <div class="mono" v-if="paramAsciiText">ASCII: {{ paramAsciiText }}</div>
-      </div>
+      <!-- ============== 右列 ============== -->
+      <div class="col">
+        <!-- 单体电压 -->
+        <section class="sec cells-sec">
+          <header class="sec-head">
+            <h3 class="sec-title">单体电压</h3>
+            <div class="cells-legend">
+              <span class="leg"><i class="leg-dot leg-dot--eq" />均衡</span>
+              <span class="leg-meta">压差 <span class="num">{{ fmt(pressureDiff, 0) }}</span> mV</span>
+              <span class="leg"><i class="leg-dot leg-dot--max" />最高</span>
+              <span class="leg"><i class="leg-dot leg-dot--min" />最低</span>
+            </div>
+          </header>
+          <div class="cells-grid">
+            <div
+              v-for="(v, i) in cellVoltages"
+              :key="i"
+              :class="['cell-box', cellClass(v, i)]"
+            >
+              <span class="cell-num">{{ pad(i + 1) }}</span>
+              <span class="cell-v num">{{ fmt(v / 1000, 3) }}<span class="cell-unit">V</span></span>
+            </div>
+          </div>
+        </section>
 
-      <el-divider content-position="left">写入（需工厂模式）</el-divider>
-      <div class="param-row">
-        <el-select v-model="paramWriteReg" size="small" filterable placeholder="选择参数" style="flex: 1" :disabled="!connected">
-          <el-option v-for="p in writableParams" :key="p.index" :label="`[${p.index}] ${p.name}${p.unit ? ' (' + p.unit + ')' : ''}`" :value="p.index" />
-        </el-select>
-        <el-input-number v-model="paramWriteVal" size="small" :min="0" :max="65535" controls-position="right" style="width: 140px" />
-        <el-button size="small" type="warning" :disabled="!connected" @click="writeParam">写入</el-button>
+        <!-- 温度 -->
+        <section class="sec temp-sec">
+          <h3 class="sec-title">温度</h3>
+          <div class="temp-body">
+            <DonutTemp :value="mosTemp" label="MOS" />
+            <div class="temp-bars">
+              <div v-for="(t, i) in temperatures" :key="i" class="temp-bar" :class="tempBarClass(t)">
+                <span class="tb-name">温度{{ i + 1 }}</span>
+                <div class="tb-track">
+                  <div class="tb-fill" :style="{ width: tempPct(t) + '%' }" />
+                </div>
+                <span class="tb-val">
+                  <span class="num">{{ Number.isFinite(t) ? t.toFixed(1) : '--' }}</span>
+                  <span class="tb-unit">℃</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
       </div>
-      <div class="tip">写入会自动进入→写→退出工厂模式；ASCII 类参数请通过读取查看。</div>
-    </el-card>
-
-    <!-- ============ 密码 ============ -->
-    <el-card class="sec" shadow="never">
-      <template #header><span class="sec-title"><el-icon><Lock /></el-icon> 密码</span></template>
-      <div class="pwd-block">
-        <div class="pwd-title">工厂密码 (0x0B)</div>
-        <div class="param-row">
-          <el-input-number v-model="oldPwd" :min="0" :max="65535" size="small" controls-position="right" style="width: 150px" />
-          <span class="tip">原密码(默认0x5678)</span>
-          <el-input-number v-model="newPwd" :min="0" :max="65535" size="small" controls-position="right" style="width: 150px" />
-          <span class="tip">新密码</span>
-          <el-button size="small" :disabled="!connected" @click="modifyFactoryPwd">修改</el-button>
-        </div>
-        <div class="param-row">
-          <el-button size="small" :disabled="!connected" @click="clearFactoryPwd">清除(恢复默认0x5678)</el-button>
-        </div>
-      </div>
-      <el-divider />
-      <div class="pwd-block">
-        <div class="pwd-title">蓝牙密码</div>
-        <div class="param-row">
-          <el-input v-model="btOld" size="small" placeholder="原密码6位" style="width: 140px" />
-          <el-input v-model="btNew" size="small" placeholder="新密码6位" style="width: 140px" />
-        </div>
-        <div class="param-row">
-          <el-button size="small" :disabled="!connected || !btNew" @click="btPair">配对(设密码)</el-button>
-          <el-button size="small" :disabled="!connected || !btOld || !btNew" @click="btModify">修改密码</el-button>
-        </div>
-      </div>
-    </el-card>
-
-    <!-- ============ 加热控制 ============ -->
-    <el-card class="sec" shadow="never">
-      <template #header><span class="sec-title"><el-icon><Sunny /></el-icon> 加热控制 (0xFC)</span></template>
-      <div class="param-row">
-        <span class="tip">启动温度</span>
-        <el-input-number v-model="heatStartTemp" :min="-127" :max="127" size="small" controls-position="right" style="width: 120px" />
-        <span class="tip">停止温度</span>
-        <el-input-number v-model="heatStopTemp" :min="-127" :max="127" size="small" controls-position="right" style="width: 120px" />
-        <el-button size="small" type="warning" :disabled="!connected" @click="heatStart">启动加热</el-button>
-        <el-button size="small" :disabled="!connected" @click="heatStop">停止加热</el-button>
-      </div>
-    </el-card>
-
-    <!-- ============ 指令响应 ============ -->
-    <el-card class="sec" shadow="never">
-      <template #header><span class="sec-title">最近指令响应</span></template>
-      <div v-if="!ackHistory.length" class="tip">暂无</div>
-      <div v-for="(a, i) in ackHistory" :key="i" class="ack-line mono">{{ a }}</div>
-    </el-card>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import {
-  Refresh, DataBoard, Operation, Histogram, Switch, MagicStick, Setting, Lock, Sunny, TrendCharts,
-} from '@element-plus/icons-vue'
-import {
-  buildReadBasicInfo, buildReadCellVoltages, buildReadHardwareVersion,
-  buildReadProtectCounts,   buildReadChipType, buildReadInternalRes,
-  buildControlMOS, MOS_TYPE, MOS_ACTION,
-  buildControlCommand, CONTROL_FUNC,
-  buildEnterFactory, buildExitFactory, buildReadParam, buildWriteParam,
-  buildFactoryPwdModify, buildFactoryPwdClear,
-  buildBtPair, buildBtPwdModify, buildHeating,
-  parseBasicInfo, parseCellVoltages, parseHardwareVersion, parseProtectCounts, parseInternalRes,
-  PROTECT_BIT, type BasicInfo, type Frame,
-} from '@/jbd/jbd-protocol'
-import { jbdBus } from '@/jbd/jbd-bus'
-import LineChart from './LineChart.vue'
-import { PARAM_TABLE, CHIP_TYPES, paramFormat, paramDispUnit } from '@/jbd/jbd-params'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
+import { Refresh } from '@element-plus/icons-vue'
+import { useJbd } from '@/jbd/useJbd'
+import BatteryMeter from './BatteryMeter.vue'
+import DonutTemp from './DonutTemp.vue'
 
-const props = defineProps<{ connected: boolean }>()
+const j = useJbd()
+const {
+  connected, basicInfo, cellVoltages, protectList, cellMax, cellMin,
+  maxTemp, socStatus, tempStatus, autoPollProxy, cellClass, fmt, pad,
+  chipTypeName, hwVersion,
+  readBasic, readCells, readProtect, readChip, readHw,
+} = j
 
-// ===== 状态 =====
-const basicInfo = ref<BasicInfo | null>(null)
-const cellVoltages = ref<number[]>([])
-const internalRes = ref<number[]>([])
-const hwVersion = ref('')
-const protectCounts = ref<Record<string, number>>({})
-const chipType = ref<number | null>(null)
-const paramResult = ref<{ reg: number; values: number[] } | null>(null)
-const ackHistory = ref<string[]>([])
-const inFactory = ref(false)
-const autoPollProxy = ref(false)
-
-// 参数表单
-const paramReg = ref(0)
-const paramCount = ref(1)
-const paramWriteReg = ref(2)
-const paramWriteVal = ref(0)
-
-// 密码表单
-const oldPwd = ref(0x5678)
-const newPwd = ref(0)
-const btOld = ref('')
-const btNew = ref('')
-
-// 加热表单
-const heatStartTemp = ref(5)
-const heatStopTemp = ref(15)
-
-// ===== 派生 =====
-const cellMax = computed(() => (cellVoltages.value.length ? Math.max(...cellVoltages.value) : 0))
-const cellMin = computed(() => (cellVoltages.value.length ? Math.min(...cellVoltages.value) : 0))
-const activeProtects = computed(() => {
-  if (!basicInfo.value) return []
-  const out: string[] = []
-  for (let bit = 0; bit <= 15; bit++) {
-    if (basicInfo.value.protectStatus & (1 << bit)) out.push(PROTECT_BIT[bit] || `bit${bit}`)
-  }
-  return out
+// ===== 派生读数 =====
+const totalV   = computed(() => basicInfo.value ? basicInfo.value.totalVoltage_mV / 1000 : NaN)
+const currentA = computed(() => basicInfo.value ? basicInfo.value.current_mA / 1000 : NaN)
+const remainAh = computed(() => basicInfo.value ? basicInfo.value.remainingCapacity_mAh / 1000 : NaN)
+const cycleCount = computed(() => basicInfo.value?.cycleCount ?? 0)
+const powerW   = computed(() => (Number.isFinite(totalV.value) && Number.isFinite(currentA.value)) ? totalV.value * currentA.value : NaN)
+const rsoc     = computed(() => basicInfo.value?.rsoc ?? 0)
+const chargeSwitch    = computed(() => basicInfo.value?.fet.charge ?? false)
+const dischargeSwitch = computed(() => basicInfo.value?.fet.discharge ?? false)
+const temperatures    = computed(() => basicInfo.value?.temperatures_C ?? [])
+// MOS 默认取第一个 NTC（典型布局）；若没有 NTC 则回退到 maxTemp
+const mosTemp = computed(() => {
+  const t = temperatures.value
+  if (!t.length) return maxTemp.value
+  return t[0]
 })
-const writableParams = computed(() => PARAM_TABLE.filter(p => !p.ascii))
+const protecting      = computed(() => !!j.activeProtects.value.length)
+const pressureDiff    = computed(() => cellMax.value && cellMin.value ? cellMax.value - cellMin.value : 0)
 
-// 0xFA 读取结果的可读格式化（含小数/偏移换算）
-const paramRegText = computed(() => paramResult.value?.reg ?? 0)
-const paramNameText = computed(() => paramResult.value ? paramName(paramResult.value.reg) : '')
-const paramRawHex = computed(() =>
-  paramResult.value ? paramResult.value.values.map(v => '0x' + v.toString(16).padStart(4, '0').toUpperCase()).join(' ') : '')
-const paramDisplayText = computed(() => {
-  if (!paramResult.value || paramIsAscii(paramResult.value.reg)) return ''
-  return paramResult.value.values.map((v, i) => paramFormat(paramResult.value!.reg + i, v)).join(', ')
+// 保护 / 均衡文本与色
+const protectText = computed(() => j.activeProtects.value.length ? '保护中' : '正常')
+const protectClass = computed(() => j.activeProtects.value.length ? 'state--critical' : 'state--ok')
+const balanceText = computed(() => {
+  const b = basicInfo.value
+  if (!b) return '未启动'
+  return (b.balanceLow || b.balanceHigh) ? '启动中' : '未启动'
 })
-const paramAsciiText = computed(() =>
-  paramResult.value && paramIsAscii(paramResult.value.reg) ? paramAscii(paramResult.value.values) : '')
-const paramUnitText = computed(() => paramResult.value ? paramDispUnit(paramResult.value.reg) : '')
-
-function paramName(reg: number) { return PARAM_TABLE.find(p => p.index === reg)?.name || '未知' }
-function paramIsAscii(reg: number) { return !!PARAM_TABLE.find(p => p.index === reg)?.ascii }
-function paramAscii(values: number[]): string {
-  const bytes: number[] = []
-  values.forEach(v => { bytes.push((v >> 8) & 0xff, v & 0xff) })
-  return bytes.filter(b => b > 0 && b < 128).map(b => String.fromCharCode(b)).join('')
-}
-
-function cellColor(v: number): string {
-  const volt = v / 1000
-  if (volt < 3.0) return '#f56c6c'
-  if (volt > 4.25) return '#e6a23c'
-  return '#00BFA5'
-}
-
-// ===== 会话 / 帧分发（订阅共享帧总线） =====
-let unsub: (() => void) | null = null
-onMounted(() => { unsub = jbdBus.onFrame((f) => handleFrame(f)) })
-
-function handleFrame(f: Frame) {
-  if (!f.valid) { ackHistory.value.unshift(`[0x${f.cmd.toString(16).padStart(2, '0')}] 校验失败`); return }
-  if (f.status !== 0x00) {
-    const map: Record<number, string> = {
-      0x80: '命令码不存在', 0x81: '操作无效/未进工厂模式', 0x82: '校验错误',
-      0x83: '密码配对错误', 0x84: '密码修改失败',
-    }
-    const msg = map[f.status] || `状态0x${f.status.toString(16)}`
-    ackHistory.value.unshift(`[0x${f.cmd.toString(16).padStart(2, '0')}] ${msg}`)
-    ElMessage.warning(`指令 0x${f.cmd.toString(16).padStart(2, '0')} 返回: ${msg}`)
-    return
-  }
-  switch (f.cmd) {
-    case 0x03: basicInfo.value = parseBasicInfo(f.data); recordSample(); break
-    case 0x04: cellVoltages.value = parseCellVoltages(f.data); recordSample(); break
-    case 0x05: hwVersion.value = parseHardwareVersion(f.data); ElMessage.success('硬件版本: ' + hwVersion.value); break
-    case 0xaa: protectCounts.value = parseProtectCounts(f.data); break
-    case 0xf6: internalRes.value = parseInternalRes(f.data); break
-    case 0x00: chipType.value = f.data[0] ?? null; ElMessage.success('芯片类型: ' + (CHIP_TYPES[chipType.value!] || '未知')); break
-    case 0xfa:
-      if (f.data.length >= 3) {
-        const reg = (f.data[0] << 8) | f.data[1]
-        const count = f.data[2]
-        const values: number[] = []
-        for (let i = 0; i < count; i++) values.push(((f.data[3 + i * 2] << 8) | f.data[4 + i * 2]) & 0xffff)
-        paramResult.value = { reg, values }
-      }
-      break
-    default:
-      ackHistory.value.unshift(`[0x${f.cmd.toString(16).padStart(2, '0')}] 成功`)
-  }
-  if (ackHistory.value.length > 50) ackHistory.value = ackHistory.value.slice(0, 50)
-}
-
-// ===== 发送（经共享帧总线写串口）=====
-function send(frame: number[]) {
-  if (!props.connected) { ElMessage.warning('请先连接串口'); return }
-  jbdBus.send(frame)
-}
-function pollSend(frame: number[]) { if (props.connected) jbdBus.send(frame) }
-
-// ===== 读取指令 =====
-function readBasic() { send(buildReadBasicInfo()) }
-function readCells() { send(buildReadCellVoltages()) }
-function readHw() { send(buildReadHardwareVersion()) }
-function readProtect() { send(buildReadProtectCounts()) }
-function readChip() { send(buildReadChipType()) }
-function readRes() { send(buildReadInternalRes()) }
-
-// ===== 自动轮询 =====
-let pollTimer: number | null = null
-function onPollChange(v: boolean) {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-  if (v) {
-    pollTimer = window.setInterval(() => {
-      pollSend(buildReadBasicInfo()); pollSend(buildReadCellVoltages())
-    }, 2000)
-  }
-}
-onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); unsub?.() })
-
-// ===== 趋势历史采样 =====
-interface Sample {
-  t: number
-  total: number
-  current: number
-  cells: number[]
-  temps: number[]
-  minC: number
-  maxC: number
-  diffC: number
-}
-const MAX_HISTORY = 600
-const history = ref<Sample[]>([])
-const recordTrend = ref(true)
-const trendMetric = ref<'overview' | 'pack' | 'cells' | 'temps'>('overview')
-
-function recordSample() {
-  if (!recordTrend.value || !basicInfo.value) return
-  const cells = cellVoltages.value
-  history.value.push({
-    t: Date.now(),
-    total: basicInfo.value.totalVoltage_mV / 1000,
-    current: basicInfo.value.current_mA / 1000,
-    cells: [...cells],
-    temps: [...basicInfo.value.temperatures_C],
-    minC: cells.length ? Math.min(...cells) / 1000 : 0,
-    maxC: cells.length ? Math.max(...cells) / 1000 : 0,
-    diffC: cells.length ? (Math.max(...cells) - Math.min(...cells)) / 1000 : 0,
-  })
-  if (history.value.length > MAX_HISTORY) history.value = history.value.slice(-MAX_HISTORY)
-}
-function clearTrend() { history.value = [] }
-
-const CELL_COLORS = ['#00BFA5', '#409EFF', '#E6A23C', '#F56C6C', '#67C23A', '#9B59B6', '#1ABC9C', '#FF7F50', '#8E44AD', '#2ECC71']
-const trendSeries = computed(() => {
-  const h = history.value
-  if (!h.length) return []
-  switch (trendMetric.value) {
-    case 'overview':
-      return [
-        { name: '总压(V)', color: '#00BFA5', data: h.map(s => s.total) },
-        { name: '最高单体(V)', color: '#E6A23C', data: h.map(s => s.maxC) },
-        { name: '最低单体(V)', color: '#F56C6C', data: h.map(s => s.minC) },
-        { name: '压差(mV)', color: '#9B59B6', data: h.map(s => +(s.diffC * 1000).toFixed(0)) },
-      ]
-    case 'pack':
-      return [
-        { name: '总压(V)', color: '#00BFA5', data: h.map(s => s.total) },
-        { name: '电流(A)', color: '#409EFF', data: h.map(s => s.current) },
-      ]
-    case 'cells': {
-      const n = h[0].cells.length
-      return Array.from({ length: n }, (_, i) => ({
-        name: `C${i + 1}`,
-        color: CELL_COLORS[i % CELL_COLORS.length],
-        data: h.map(s => s.cells[i] ? s.cells[i] / 1000 : 0),
-      }))
-    }
-    case 'temps': {
-      const n = h[0].temps.length
-      return Array.from({ length: n }, (_, i) => ({
-        name: `NTC${i + 1}`,
-        color: CELL_COLORS[i % CELL_COLORS.length],
-        data: h.map(s => s.temps[i] ?? 0),
-      }))
-    }
-  }
-  return []
+const balanceClass = computed(() => {
+  const b = basicInfo.value
+  return (b && (b.balanceLow || b.balanceHigh)) ? 'state--info' : 'state--neutral'
 })
-const trendUnit = computed(() => (trendMetric.value === 'overview' ? 'V / mV' : trendMetric.value === 'pack' ? 'V / A' : trendMetric.value === 'temps' ? '℃' : 'V'))
 
-// ===== MOS 控制 =====
-function setMos(type: number, open: boolean) {
-  send(buildControlMOS(type, open ? MOS_ACTION.RELEASE : MOS_ACTION.CLOSE))
+// ===== 温度条 =====
+const TEMP_MIN = -10
+const TEMP_MAX = 80
+function tempPct(t: number): number {
+  if (!Number.isFinite(t)) return 0
+  return Math.max(0, Math.min(100, ((t - TEMP_MIN) / (TEMP_MAX - TEMP_MIN)) * 100))
 }
-function setMosBoth(open: boolean) {
-  send(buildControlMOS(MOS_TYPE.CHARGE_DISCHARGE, open ? MOS_ACTION.RELEASE : MOS_ACTION.CLOSE))
-}
-
-// ===== 控制指令 =====
-const controlButtons: { label: string; fn: readonly number[] }[] = [
-  { label: '重置容量', fn: CONTROL_FUNC.RESET_CAPACITY },
-  { label: '清除记录', fn: CONTROL_FUNC.CLEAR_RECORD },
-  { label: '复位MCU', fn: CONTROL_FUNC.RESET_MCU },
-  { label: '清除保护', fn: CONTROL_FUNC.CLEAR_PROTECT },
-  { label: '进入休眠', fn: CONTROL_FUNC.SLEEP },
-  { label: '掉电模式', fn: CONTROL_FUNC.POWER_DOWN },
-  { label: '自动均衡', fn: CONTROL_FUNC.AUTO_BALANCE },
-  { label: '储运模式', fn: CONTROL_FUNC.STORAGE },
-  { label: 'SOC20%开关', fn: CONTROL_FUNC.SOC20_SWITCH },
-  { label: 'SOC20%强开', fn: CONTROL_FUNC.SOC20_FORCE },
-  { label: '强制启动', fn: CONTROL_FUNC.FORCE_START },
-  { label: '强制加热', fn: CONTROL_FUNC.FORCE_HEAT },
-]
-function runControl(fn: readonly number[]) { send(buildControlCommand(fn)) }
-
-// ===== 参数读写 =====
-function enterFactory() { send(buildEnterFactory()); inFactory.value = true }
-function exitFactory() { send(buildExitFactory()); inFactory.value = false }
-function readParam() { send(buildReadParam(paramReg.value, paramCount.value)) }
-async function writeParam() {
-  if (!inFactory.value) { send(buildEnterFactory()); inFactory.value = true }
-  send(buildWriteParam(paramWriteReg.value, [(paramWriteVal.value >> 8) & 0xff, paramWriteVal.value & 0xff]))
-  send(buildExitFactory()); inFactory.value = false
+function tempBarClass(t: number): string {
+  if (!Number.isFinite(t)) return 'tb--na'
+  if (t > 55) return 'tb--crit'
+  if (t > 45) return 'tb--warn'
+  return 'tb--ok'
 }
 
-// ===== 密码 =====
-function modifyFactoryPwd() { send(buildFactoryPwdModify(oldPwd.value, newPwd.value)) }
-function clearFactoryPwd() { send(buildFactoryPwdClear()) }
-function digits(s: string): number[] {
-  return s.split('').map(c => parseInt(c, 10)).filter(n => !isNaN(n) && n >= 0 && n <= 9)
-}
-function btPair() {
-  const d = digits(btNew.value)
-  if (d.length !== 6) { ElMessage.warning('请填写 6 位蓝牙密码'); return }
-  send(buildBtPair(d))
-}
-function btModify() {
-  const o = digits(btOld.value), n = digits(btNew.value)
-  if (o.length !== 6 || n.length !== 6) { ElMessage.warning('请填写 6 位蓝牙密码'); return }
-  send(buildBtPwdModify(o, n))
+// ===== 自动轮询（沿用 store 单例 interval）=====
+j.onPollChange(false) // 默认未开启
+function onPollChange(v: boolean | string | number) {
+  j.onPollChange(!!v)
 }
 
-// ===== 加热 =====
-function heatStart() { send(buildHeating(0x01, 0, 0, heatStartTemp.value, heatStopTemp.value)) }
-function heatStop() { send(buildHeating(0x02, 0, 0, 0, 0)) }
+// 附加：自动轮询开启时，同步拉取保护事件（最多每 5s 一次）
+const readProtectOnPoll = ref(true)
+let protTimer: number | null = null
+function scheduleProtectRead() {
+  if (protTimer) { clearInterval(protTimer); protTimer = null }
+  if (autoPollProxy.value && readProtectOnPoll.value) {
+    protTimer = window.setInterval(() => {
+      if (!connected.value) return
+      readProtect()
+    }, 5000)
+  }
+}
+watch(autoPollProxy, scheduleProtectRead)
+
+// ===== 全部读取 =====
+const lastPoll = ref('')
+function refreshAll() {
+  if (!connected.value) return
+  readBasic(); readCells(); readProtect()
+  readChip(); readHw()
+  const now = new Date()
+  lastPoll.value = now.toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+// 启动时拉一帧（连接好的话）；挂载/卸载接管 interval 监听
+const now = new Date()
+let mountedAt = ''
+mountedAt = now.toLocaleTimeString('zh-CN', { hour12: false })
+function onConnChange() {
+  if (connected.value) refreshAll()
+}
+let connWatcher: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  refreshAll()
+  connWatcher = setInterval(onConnChange, 1500)
+})
+onUnmounted(() => {
+  j.onPollChange(false)
+  if (connWatcher) clearInterval(connWatcher)
+  if (protTimer) clearInterval(protTimer)
+})
 </script>
 
 <style scoped>
 .jbd-panel {
-  padding: 16px;
-  overflow-x: hidden;
+  padding: var(--space-6);
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
-.jbd-panel > * { min-width: 0; }
-.sec { background: #1a1e24; border: 1px solid #2a2e34; }
-.sec :deep(.el-card__header) { padding: 10px 14px; border-bottom: 1px solid #2a2e34; display: flex; align-items: center; gap: 8px; }
-.sec-title { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: #f0f1f2; }
-.sec-title .el-icon { color: #00BFA5; }
-.sub { font-size: 12px; color: #8a8e94; margin-left: auto; }
-.btn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.poll-row { margin-top: 10px; display: flex; align-items: center; gap: 10px; }
-.tip { font-size: 12px; color: #6a6e74; }
-.stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.stat { background: #0c0e10; border: 1px solid #2a2e34; border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
-.stat .k { font-size: 12px; color: #8a8e94; }
-.stat .v { font-size: 15px; font-weight: 600; color: #f0f1f2; font-family: 'JetBrains Mono', monospace; }
-.stat .v.pos { color: #00BFA5; }
-.stat .v.neg { color: #f56c6c; }
-.tag-row { margin-top: 10px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.tag-row .lbl { font-size: 12px; color: #8a8e94; }
-.cell-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; }
-.cell { background: #0c0e10; border: 1px solid #2a2e34; border-radius: 6px; padding: 6px 4px; text-align: center; }
-.cell-idx { display: block; font-size: 11px; color: #6a6e74; }
-.cell-v { display: block; font-size: 13px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
-.mos-row { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
-.mos-item { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #b0b4ba; }
-.btn-group { flex-direction: row; gap: 8px; }
-.param-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.param-result { background: #0c0e10; border: 1px solid #2a2e34; border-radius: 6px; padding: 8px 10px; font-size: 13px; color: #c0c4ca; }
-.param-result .mono { word-break: break-all; }
-.mono { font-family: 'JetBrains Mono', monospace; }
-.pwd-block { margin-bottom: 6px; }
-.pwd-title { font-size: 13px; color: #b0b4ba; margin-bottom: 8px; }
-.ack-line { font-size: 12px; color: #8a8e94; padding: 2px 0; border-bottom: 1px solid #1a1e24; word-break: break-all; }
-.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; }
-.lg-item { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #b0b4ba; }
-.lg-item i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.app-compact .jbd-panel { gap: var(--space-4); }
+
+/* ---------- 顶部工具栏 ---------- */
+.vp-toolbar {
+  display: flex; align-items: center; gap: var(--space-4);
+  height: 36px;
+  flex-shrink: 0;
+}
+.vp-meta { font-size: var(--fs-caption); color: var(--text-tertiary); }
+.vp-spacer { flex: 1; }
+.vp-toolbar :deep(.el-checkbox) { color: var(--text-secondary); }
+
+/* ---------- 双列布局 ---------- */
+.monitor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-5);
+}
+@media (max-width: 1100px) {
+  .monitor-grid { grid-template-columns: 1fr; }
+}
+.col { display: flex; flex-direction: column; gap: var(--space-5); min-width: 0; }
+
+/* ---------- 通用 sec ---------- */
+.sec {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+}
+.sec-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+.sec-title {
+  position: relative;
+  padding-left: 10px;
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+}
+.sec-title::before {
+  content: '';
+  position: absolute; left: 0; top: 4px; bottom: 4px;
+  width: 3px; border-radius: 2px;
+  background: var(--info);
+}
+
+/* ============ 电池概览 ============ */
+.battery-sec { padding: var(--space-5); }
+.battery-row {
+  display: flex; align-items: stretch; gap: var(--space-5);
+}
+.battery-info { flex: 1; min-width: 0; }
+
+.info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: auto;
+  row-gap: var(--space-4);
+  column-gap: var(--space-6);
+}
+.kv {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-3);
+  border-bottom: 1px dashed var(--border-subtle);
+  padding-bottom: 6px;
+}
+.kv--empty { visibility: hidden; }
+.kv--toggle { gap: var(--space-2); }
+
+.kv-label {
+  font-size: var(--fs-caption);
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+.kv-num {
+  font-family: var(--font-mono);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums slashed-zero;
+  color: var(--text-primary);
+  display: inline-flex; align-items: baseline; gap: 2px;
+}
+.kv-unit {
+  font-size: var(--fs-caption);
+  color: var(--text-tertiary);
+  margin-left: 2px;
+}
+.kv--neg .num { color: var(--data-temp); }
+
+/* 底部保护 / 均衡状态行 */
+.battery-foot {
+  display: flex; align-items: center; gap: var(--space-8);
+  padding-top: var(--space-4);
+  margin-top: var(--space-4);
+  border-top: 1px dashed var(--border-subtle);
+}
+.bf-item { display: flex; align-items: center; gap: 4px; font-size: var(--fs-caption); color: var(--text-secondary); }
+.bf-val { font-family: var(--font-mono); font-weight: var(--fw-semibold); }
+.state--ok      { color: var(--ok); }
+.state--warning { color: var(--warning); }
+.state--critical{ color: var(--critical); }
+.state--info    { color: var(--info); }
+.state--neutral { color: var(--text-tertiary); }
+
+/* ============ 设备信息 ============ */
+.dev-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  row-gap: var(--space-4);
+  column-gap: var(--space-6);
+}
+.kv-val {
+  font-family: var(--font-mono);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+  text-align: right;
+  word-break: break-all;
+}
+
+/* 刷新小按钮 */
+.refresh-mini {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.refresh-mini:hover { background: var(--bg-hover); color: var(--info); border-color: var(--info); }
+.refresh-mini svg { width: 12px; height: 12px; }
+
+/* ============ 保护事件 ============ */
+.events-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.evt-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+  font-size: var(--fs-body-sm);
+}
+.evt-row:nth-child(2n) { border-right: none; }
+.evt-row:nth-last-child(-n+2) { border-bottom: none; }    /* 倒数 2 行移除底边 */
+.evt-row:nth-last-child(2):nth-child(odd) {
+  /* 最后一行仅 1 项（11 个），用 ::after 占位隐藏 */
+}
+.evt-row:nth-child(11) { /* 短路次数单独一行左侧 */ }
+.evt-name { color: var(--text-secondary); }
+.evt-count {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.evt-unit { font-size: var(--fs-caption); color: var(--text-tertiary); margin-left: 4px; }
+
+/* ============ 单体电压 ============ */
+.cells-legend {
+  display: flex; align-items: center; gap: var(--space-4);
+  font-size: var(--fs-caption);
+  color: var(--text-secondary);
+}
+.leg, .leg-meta { display: inline-flex; align-items: center; gap: 6px; }
+.leg-meta { color: var(--text-tertiary); }
+.leg-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.leg-dot--eq  { background: var(--ok); }
+.leg-dot--max { background: var(--data-voltage); }
+.leg-dot--min { background: var(--data-current); opacity: 0.7; }
+
+.cells-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.cell-box {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-3);
+  padding: 8px var(--space-3);
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-caption);
+  min-height: 32px;
+}
+.cell-num { color: var(--text-tertiary); font-size: var(--fs-micro); }
+.cell-v {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: baseline;
+}
+.cell-unit { color: var(--text-tertiary); margin-left: 2px; font-size: var(--fs-micro); }
+
+.cell--max  { border-color: var(--data-voltage); background: color-mix(in srgb, var(--data-voltage) 14%, transparent); }
+.cell--min  { border-color: var(--data-current); background: color-mix(in srgb, var(--data-current) 10%, transparent); }
+.cell--crit { border-color: var(--critical); background: var(--critical-bg); color: var(--critical); }
+.cell--warn { border-color: var(--warning); background: var(--warning-bg); }
+.cell--eq   { box-shadow: inset 0 0 0 1px var(--ok); border-color: color-mix(in srgb, var(--ok) 60%, var(--border-default)); }
+
+/* ============ 温度 ============ */
+.temp-body {
+  display: flex; align-items: center; gap: var(--space-6);
+}
+.temp-bars {
+  flex: 1;
+  display: flex; flex-direction: column; gap: var(--space-5);
+}
+.temp-bar {
+  display: flex; align-items: center; gap: var(--space-4);
+}
+.tb-name {
+  font-size: var(--fs-body-sm);
+  color: var(--text-secondary);
+  width: 56px;
+  flex-shrink: 0;
+}
+.tb-track {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-inset);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+.tb-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--data-voltage), var(--data-current));
+  border-radius: 4px;
+  transition: width 600ms var(--ease-standard);
+}
+.tb-val {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: baseline;
+  min-width: 64px; justify-content: flex-end;
+}
+.tb-unit { color: var(--text-tertiary); margin-left: 2px; font-size: var(--fs-caption); }
+
+.tb--warn .tb-fill { background: linear-gradient(90deg, var(--warning), var(--data-temp)); }
+.tb--crit .tb-fill { background: linear-gradient(90deg, var(--critical), var(--data-temp)); }
 </style>

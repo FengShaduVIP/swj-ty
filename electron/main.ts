@@ -11,7 +11,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    title: '串口 Modbus 调试工具',
+    title: '天一BMS',
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       nodeIntegration: false,

@@ -1,0 +1,151 @@
+/* =========================================================================
+ * VOLTGRID Industrial Dark (VG-Dark v1.0) — 设计令牌
+ * 来源：DESIGN.md（锂电池 PACK 上位机操作软件）
+ * 任何 UI 颜色 / 间距 / 圆角 / 字号必须从本文件取值，禁止硬编码非刻度值。
+ * ========================================================================= */
+
+:root {
+  /* ---------- 2.1 背景层级（4+1 级）---------- */
+  --bg-canvas: #0B0E14;   /* 窗口最底层、导航 Rail、外壳空隙 */
+  --bg-base:   #11151D;   /* 主工作区背景 */
+  --bg-surface: #161B26;  /* 数据卡片、面板、图表容器 */
+  --bg-raised: #1D2430;   /* 弹层、下拉、模态、表头、Tooltip、悬浮态 */
+  --bg-inset:  #0D1117;   /* 内凹区：输入框、图表绘图区、代码/日志块 */
+  --bg-hover:  rgba(255, 255, 255, 0.035);
+  --bg-active: rgba(255, 255, 255, 0.06);
+  --bg-scrim:  rgba(6, 9, 14, 0.72);
+
+  /* ---------- 2.2 文本色 ---------- */
+  --text-primary:   #E8EDF5;
+  --text-secondary: #9FAABD;
+  --text-tertiary:  #828E9F;
+  --text-disabled:  #59636F;
+  --text-inverse:   #08111C;
+  --text-on-brand:  #FFFFFF;
+
+  /* ---------- 2.3 边框与分割线 ---------- */
+  --border-subtle:  #1E2633;
+  --border-default: #2A3240;
+  --border-strong:  #3A4454;
+  --border-brand:   #2C7BE5;
+  --divider-inline: rgba(255, 255, 255, 0.06);
+
+  /* ---------- 2.4 品牌主色 — Voltaic Azure ---------- */
+  --brand:             #2C7BE5;
+  --brand-solid:       #1F6FE0;
+  --brand-solid-hover: #2C7BE5;
+  --brand-solid-active:#1A5FC8;
+  --brand-text:        #58A0F5;
+  --brand-bg-subtle:   rgba(44, 123, 229, 0.12);
+  --brand-bg-hover:    rgba(44, 123, 229, 0.18);
+  --brand-ring:        rgba(44, 123, 229, 0.38);
+
+  /* ---------- 2.5 语义状态色 ---------- */
+  --critical:        #F5544E;
+  --critical-solid:  #D93A34;
+  --critical-bg:     rgba(245, 84, 78, 0.14);
+  --critical-border: rgba(245, 84, 78, 0.42);
+  --warning:         #EFB33C;
+  --warning-bg:      rgba(239, 179, 60, 0.13);
+  --warning-border:  rgba(239, 179, 60, 0.40);
+  --info:            #4DA3FF;
+  --info-bg:         rgba(77, 163, 255, 0.13);
+  --info-border:     rgba(77, 163, 255, 0.40);
+  --ok:              #2FBF71;
+  --ok-bright:       #3ED88A;
+  --ok-bg:           rgba(47, 191, 113, 0.13);
+  --neutral-state:   #8B98AC;
+  --neutral-bg:      rgba(139, 152, 172, 0.12);
+
+  /* ---------- 2.6 图表数据色板（曲线专属命名空间）---------- */
+  --data-voltage: #2DD4E8;
+  --data-current: #A78BFA;
+  --data-temp:    #FF8A5B;
+  --data-soc:     #34D399;
+  --data-delta:   #F472B6;
+  --data-aux-1:   #FCD34D;
+  --data-aux-2:   #8B98AC;
+  --data-aux-3:   #7DD3FC;
+
+  /* ---------- 2.7 图表结构色 ---------- */
+  --chart-plot-bg:       #0D1117;
+  --chart-grid:          #1E2633;
+  --chart-grid-minor:    rgba(255, 255, 255, 0.035);
+  --chart-axis:          #2A3240;
+  --chart-axis-label:    #828E9F;
+  --chart-crosshair:     #5A6577;
+  --chart-threshold:     rgba(245, 84, 78, 0.55);
+  --chart-threshold-warn:rgba(239, 179, 60, 0.5);
+  --chart-band-safe:     rgba(47, 191, 113, 0.07);
+  --chart-band-danger:   rgba(245, 84, 78, 0.08);
+  --chart-selection:     rgba(44, 123, 229, 0.16);
+
+  /* ---------- 2.8 温度热力图色阶 ---------- */
+  --heat-1: #0F2B3D; --heat-2: #155E75; --heat-3: #0E9488;
+  --heat-4: #65A30D; --heat-5: #CA8A04; --heat-6: #EA580C; --heat-7: #B91C1C;
+
+  /* ---------- 3.1 字体栈 ---------- */
+  --font-sans: "Inter", "Inter var", "Segoe UI Variable Text", "Segoe UI",
+               system-ui, -apple-system, "PingFang SC",
+               "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC",
+               Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Roboto Mono", "IBM Plex Mono",
+               "SF Mono", "Cascadia Mono", Consolas,
+               "Liberation Mono", ui-monospace, monospace;
+  --font-display-num: "JetBrains Mono", "Roboto Mono", "DIN Alternate",
+                       "Bahnschrift", "SF Mono", Consolas, monospace;
+  --font-numeric-features: "tnum" 1, "zero" 1, "ss01" 1, "cv08" 1;
+
+  /* ---------- 3.2 字号阶梯 ---------- */
+  --fs-num-hero: 44px; --fs-num-xl: 32px; --fs-num-lg: 24px; --fs-num-md: 18px;
+  --fs-num-sm: 13px;  --fs-num-xs: 11px;
+  --fs-view-title: 19px; --fs-h2: 16px; --fs-h3: 14px; --fs-body: 14px;
+  --fs-body-sm: 13px;  --fs-caption: 12px; --fs-label: 11px; --fs-micro: 10px;
+
+  /* ---------- 3.3 字重 ---------- */
+  --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+
+  /* ---------- 5.2 间距刻度（4px 子单位 + 8px 基准）---------- */
+  --space-0: 0;  --space-1: 2px;  --space-2: 4px;  --space-3: 6px;
+  --space-4: 8px;  --space-5: 12px; --space-6: 16px; --space-7: 20px;
+  --space-8: 24px; --space-9: 32px; --space-10: 40px; --space-11: 48px; --space-12: 64px;
+
+  /* ---------- 5.4 尺寸令牌 ---------- */
+  --h-titlebar: 32px; --h-statusbar: 48px; --h-toolbar: 40px; --h-footer: 26px; --h-alertbar: 30px;
+  --w-rail-collapsed: 56px; --w-rail-expanded: 220px;
+  --w-drawer-sm: 380px; --w-drawer-md: 480px;
+  --h-row-compact: 28px; --h-row: 32px; --h-row-relaxed: 36px;
+  --h-control-sm: 26px; --h-control: 32px; --h-control-lg: 38px;
+  --h-cell: 32px;
+  --container-narrow: 880px;
+
+  /* ---------- 6.1 圆角 ---------- */
+  --radius-none: 0;  --radius-xs: 2px; --radius-sm: 4px;
+  --radius-md: 6px;  --radius-lg: 8px; --radius-pill: 999px;
+
+  /* ---------- 6.2 阴影（暗色：边框为主，阴影为辅）---------- */
+  --elev-0: none;
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --elev-2: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.3);
+  --elev-3: 0 16px 40px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(0, 0, 0, 0.4);
+  --ring-focus: 0 0 0 3px rgba(44, 123, 229, 0.38);
+  --glow-critical: inset 0 0 0 1px rgba(245, 84, 78, 0.42), 0 0 12px rgba(245, 84, 78, 0.18);
+  --glow-ok: 0 0 0 3px rgba(62, 216, 138, 0.18);
+
+  /* ---------- 6.3 Z-index ---------- */
+  --z-base: 0;  --z-sticky: 100; --z-rail: 200; --z-statusbar: 300;
+  --z-dropdown: 400; --z-drawer: 500; --z-scrim: 600; --z-modal: 700;
+  --z-toast: 800; --z-tooltip: 900; --z-critical-alert: 1000;
+
+  /* ---------- 9.2 动效令牌 ---------- */
+  --dur-instant: 80ms;  --dur-fast: 120ms;  --dur-base: 180ms; --dur-slow: 240ms; --dur-chart: 300ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-linear: linear;
+  --anim-pulse: 1.6s var(--ease-standard) infinite;
+  --anim-blink: 0.8s steps(2, end) infinite;
+  --anim-breathe: 1.2s var(--ease-standard) infinite;
+  --anim-shimmer: 1.4s linear infinite;
+  --anim-flow: 2s linear infinite;
+}

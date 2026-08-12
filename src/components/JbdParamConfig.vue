@@ -1,11 +1,11 @@
 <template>
   <div class="param-config">
     <!-- 顶部操作栏 -->
-    <el-card class="sec" shadow="never">
-      <template #header>
-        <span class="sec-title"><el-icon><Setting /></el-icon> JBD 参数配置</span>
+    <section class="panel sec">
+      <header class="sec-h">
+        <span class="panel-title"><el-icon><Setting /></el-icon> JBD 参数配置</span>
         <div class="header-actions">
-          <el-tag v-if="inFactory" type="success" size="small">工厂模式</el-tag>
+          <StatusBadge :status="inFactory ? 'brand' : 'neutral'" :label="inFactory ? '工厂模式' : '普通模式'" />
           <el-button size="small" :disabled="!connected" :loading="busy" @click="readAll"><el-icon><Refresh /></el-icon> 读取全部</el-button>
           <el-button size="small" type="primary" :disabled="!connected || !dirtyCount" :loading="busy" @click="writeAll"><el-icon><Upload /></el-icon> 全部写入({{ dirtyCount }})</el-button>
           <el-upload
@@ -19,83 +19,91 @@
           </el-upload>
           <el-button size="small" @click="exportConfig"><el-icon><Download /></el-icon> 导出配置</el-button>
         </div>
-      </template>
-      <div class="tip">按分组读取/写入 0xFA 参数寄存器；点击每行右侧「读」或「写」可单独操作。写参数时程序会自动进入→写入→退出工厂模式，无需手动操作。</div>
-    </el-card>
+      </header>
+      <div class="sec-b">
+        <div class="tip">按分组读取/写入 0xFA 参数寄存器；点击每行右侧「读」或「写」可单独操作。写参数时程序会自动进入→写入→退出工厂模式，无需手动操作。</div>
+      </div>
+    </section>
 
-    <div v-if="busy" class="progress-bar"><el-progress :percentage="progress" :stroke-width="4" color="#00BFA5" /></div>
+    <div v-if="busy" class="progress-bar">
+      <el-progress :percentage="progress" :stroke-width="4" :color="brandColor" />
+    </div>
 
     <!-- 导入配置预览 -->
-    <el-card v-if="importedParams.length" class="sec" shadow="never">
-      <template #header>
-        <span class="sec-title"><el-icon><Files /></el-icon> 已导入配置预览（{{ importedParams.length }} 项）</span>
+    <section v-if="importedParams.length" class="panel sec">
+      <header class="sec-h">
+        <span class="panel-title"><el-icon><Files /></el-icon> 已导入配置预览（{{ importedParams.length }} 项）</span>
         <div class="header-actions">
           <el-button size="small" type="primary" :disabled="!connected || busy" :loading="busy" @click="sendAllImported">
             <el-icon><Promotion /></el-icon> 一键下发所有参数
           </el-button>
           <el-button size="small" text :disabled="busy" @click="clearImport">清除</el-button>
         </div>
-      </template>
-      <div class="tip">以下为配置文件解析出的参数（中文文件名亦可），核对无误后点击「一键下发所有参数」批量写入目标设备，下发结果将在此处实时反馈。</div>
-      <div class="import-table">
-        <div class="import-row import-head">
-          <span class="c-idx">寄存器</span>
-          <span class="c-label">参数名</span>
-          <span class="c-value">下发值</span>
-          <span class="c-current">当前值</span>
-          <span class="c-raw">原始值(HEX)</span>
-          <span class="c-status">状态</span>
-        </div>
-        <div v-for="(p, i) in importedParams" :key="i" class="import-row" :class="p.status">
-          <span class="c-idx">[{{ p.index }}]</span>
-          <span class="c-label">{{ p.label }}</span>
-          <span class="c-value">{{ p.value }} {{ p.unit }}</span>
-          <span class="c-current">{{ currentParamValue(p) }}</span>
-          <span class="c-raw">0x{{ p.raw.toString(16).padStart(4, '0').toUpperCase() }}</span>
-          <span class="c-status">
-            <span v-if="p.status === 'ok'" class="dot ok" />
-            <span v-else-if="p.status === 'fail'" class="dot fail" />
-            <span v-else class="muted">待下发</span>
-          </span>
+      </header>
+      <div class="sec-b">
+        <div class="tip">以下为配置文件解析出的参数（中文文件名亦可），核对无误后点击「一键下发所有参数」批量写入目标设备，下发结果将在此处实时反馈。</div>
+        <div class="import-table">
+          <div class="import-row import-head">
+            <span class="c-idx">寄存器</span>
+            <span class="c-label">参数名</span>
+            <span class="c-value">下发值</span>
+            <span class="c-current">当前值</span>
+            <span class="c-raw">原始值(HEX)</span>
+            <span class="c-status">状态</span>
+          </div>
+          <div v-for="(p, i) in importedParams" :key="i" class="import-row" :class="p.status">
+            <span class="c-idx">[{{ p.index }}]</span>
+            <span class="c-label">{{ p.label }}</span>
+            <span class="c-value">{{ p.value }} {{ p.unit }}</span>
+            <span class="c-current">{{ currentParamValue(p) }}</span>
+            <span class="c-raw">0x{{ p.raw.toString(16).padStart(4, '0').toUpperCase() }}</span>
+            <span class="c-status">
+              <span v-if="p.status === 'ok'" class="dot ok" />
+              <span v-else-if="p.status === 'fail'" class="dot fail" />
+              <span v-else class="muted">待下发</span>
+            </span>
+          </div>
         </div>
       </div>
-    </el-card>
+    </section>
 
     <!-- 分组表单 -->
     <div class="groups">
-      <el-card v-for="g in groups" :key="g.title" class="sec group-card" shadow="never">
-        <template #header>
+      <section v-for="g in groups" :key="g.title" class="panel sec group-card">
+        <header class="sec-h">
           <span class="group-title">{{ g.title }}</span>
-          <el-button size="small" text :disabled="!connected" @click="readGroup(g)"><el-icon><Refresh /></el-icon> 读本组</el-button>
-        </template>
-        <div class="field-grid">
-          <div v-for="f in g.fields" :key="f.index" class="field" :class="f.status">
-            <div class="field-label">
-              <span>{{ f.label }}</span>
-              <el-tag v-if="f.note" type="info" size="small">{{ f.note }}</el-tag>
-            </div>
-            <div class="field-row">
-              <el-input-number
-                v-model="f.value"
-                :disabled="f.status === 'reading'"
-                :precision="f.decimals"
-                :step="f.step ?? 1"
-                :min="f.min"
-                :max="f.max"
-                size="small"
-                controls-position="right"
-                style="flex: 1"
-                @change="f.dirty = true"
-              />
-              <span class="unit">{{ f.unit }}</span>
-              <el-button size="small" text :loading="f.status === 'reading'" :disabled="!connected" @click="readField(f)">读</el-button>
-              <el-button size="small" type="primary" text :loading="f.status === 'writing'" :disabled="!connected || f.value === null" @click="writeField(f)">下发</el-button>
-              <span v-if="f.status === 'ok'" class="dot ok" />
-              <span v-else-if="f.status === 'fail'" class="dot fail" title="失败/超时" />
+          <el-button size="small" text :disabled="!connected" style="margin-left:auto" @click="readGroup(g)"><el-icon><Refresh /></el-icon> 读本组</el-button>
+        </header>
+        <div class="sec-b">
+          <div class="field-grid">
+            <div v-for="f in g.fields" :key="f.index" class="field" :class="[f.status, { 'field--dirty': f.dirty }]">
+              <div class="field-label">
+                <span>{{ f.label }}</span>
+                <el-tag v-if="f.note" type="info" size="small">{{ f.note }}</el-tag>
+              </div>
+              <div class="field-row">
+                <el-input-number
+                  v-model="f.value"
+                  :disabled="f.status === 'reading'"
+                  :precision="f.decimals"
+                  :step="f.step ?? 1"
+                  :min="f.min"
+                  :max="f.max"
+                  size="small"
+                  controls-position="right"
+                  style="flex: 1"
+                  @change="f.dirty = true"
+                />
+                <span class="unit">{{ f.unit }}</span>
+                <el-button size="small" text :loading="f.status === 'reading'" :disabled="!connected" @click="readField(f)">读</el-button>
+                <el-button size="small" type="primary" text :loading="f.status === 'writing'" :disabled="!connected || f.value === null" @click="writeField(f)">下发</el-button>
+                <span v-if="f.status === 'ok'" class="dot ok" />
+                <span v-else-if="f.status === 'fail'" class="dot fail" title="失败/超时" />
+              </div>
             </div>
           </div>
         </div>
-      </el-card>
+      </section>
     </div>
   </div>
 </template>
@@ -110,37 +118,22 @@ import {
   buildEnterFactory, buildExitFactory,
 } from '@/jbd/jbd-protocol'
 import { paramRawToDisplay, paramDisplayToRaw } from '@/jbd/jbd-params'
+import StatusBadge from './StatusBadge.vue'
 
 type FieldStatus = 'idle' | 'reading' | 'writing' | 'ok' | 'fail'
 
 interface FieldDef {
-  label: string
-  index: number
-  unit: string
-  decimals: number
-  step?: number
-  min?: number
-  max?: number
-  note?: string
+  label: string; index: number; unit: string; decimals: number; step?: number; min?: number; max?: number; note?: string
 }
-
 interface FieldState extends FieldDef {
-  value: number | null
-  dirty: boolean
-  status: FieldStatus
+  value: number | null; dirty: boolean; status: FieldStatus
 }
 
 const props = defineProps<{ connected: boolean }>()
 
-// ===== 导入配置预览 =====
 type ImportStatus = 'ok' | 'fail' | undefined
 interface ImportedParam {
-  index: number
-  label: string
-  unit: string
-  value: number
-  raw: number
-  status?: ImportStatus
+  index: number; label: string; unit: string; value: number; raw: number; status?: ImportStatus
 }
 const importedParams = ref<ImportedParam[]>([])
 
@@ -152,6 +145,7 @@ const autoFactory = ref(true)
 const inFactory = ref(false)
 const busy = ref(false)
 const progress = ref(0)
+const brandColor = '#1F6FE0'
 
 function makeField(def: FieldDef): FieldState {
   return { ...def, value: null, dirty: false, status: 'idle' }
@@ -259,10 +253,7 @@ async function readField(f: FieldState): Promise<boolean> {
   jbdBus.send(buildReadParam(f.index, 1))
   const resp = await jbdBus.onceResponse(1500, 0xfa)
   const raw = parseParamResponse(resp)
-  if (raw === null) {
-    f.status = 'fail'
-    return false
-  }
+  if (raw === null) { f.status = 'fail'; return false }
   f.value = paramRawToDisplay(f.index, raw)
   f.dirty = false
   f.status = 'ok'
@@ -314,11 +305,8 @@ async function readAll() {
   }
   progress.value = 100
   busy.value = false
-  if (fail) {
-    ElMessage.warning(`全部读取完成：${ok} 成功，${fail} 失败`)
-  } else {
-    ElMessage.success('全部读取成功')
-  }
+  if (fail) ElMessage.warning(`全部读取完成：${ok} 成功，${fail} 失败`)
+  else ElMessage.success('全部读取成功')
 }
 
 async function writeAll() {
@@ -337,14 +325,9 @@ async function writeAll() {
     jbdBus.send(buildWriteParam(dirty[i].index, [(raw >> 8) & 0xff, raw & 0xff]))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
     if (!resp || resp.timeout || resp.status !== 0x00) {
-      dirty[i].status = 'fail'
-      fail++
+      dirty[i].status = 'fail'; fail++
       ElMessage.error(`写参数[${dirty[i].label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
-    } else {
-      dirty[i].status = 'ok'
-      dirty[i].dirty = false
-      ok++
-    }
+    } else { dirty[i].status = 'ok'; dirty[i].dirty = false; ok++ }
   }
   if (autoFactory.value) await exitFactory()
   progress.value = 100
@@ -352,7 +335,6 @@ async function writeAll() {
   ElMessage[fail ? 'warning' : 'success'](`全部写入完成：${ok} 成功，${fail} 失败`)
 }
 
-// ===== 配置文件导入 / 导出 =====
 function onFileChange(uploadFile: any) {
   const file = uploadFile?.raw as File | undefined
   if (!file) return
@@ -372,10 +354,7 @@ function onFileChange(uploadFile: any) {
 
 function applyImport(data: any) {
   const rawList: any[] = Array.isArray(data) ? data : (data?.params ?? [])
-  if (!Array.isArray(rawList)) {
-    ElMessage.error('配置文件格式不支持（需为 JBD 参数 JSON）')
-    return
-  }
+  if (!Array.isArray(rawList)) { ElMessage.error('配置文件格式不支持（需为 JBD 参数 JSON）'); return }
   const out: ImportedParam[] = []
   for (const item of rawList) {
     const index = Number(item?.index ?? item?.reg)
@@ -385,34 +364,18 @@ function applyImport(data: any) {
     const r = ((Math.trunc(raw) & 0xffff) >>> 0) & 0xffff
     const def = fieldByIndex(index)
     const display = def ? paramRawToDisplay(index, r) : r
-    out.push({
-      index,
-      label: item?.label || def?.label || `寄存器[${index}]`,
-      unit: item?.unit || def?.unit || '',
-      value: display,
-      raw: r,
-    })
+    out.push({ index, label: item?.label || def?.label || `寄存器[${index}]`, unit: item?.unit || def?.unit || '', value: display, raw: r })
   }
-  if (!out.length) {
-    ElMessage.error('未找到有效参数（请检查文件内容）')
-    return
-  }
+  if (!out.length) { ElMessage.error('未找到有效参数（请检查文件内容）'); return }
   importedParams.value = out
-  // 将已知字段同步到表单并标记为已修改
   for (const p of out) {
     const f = fieldByIndex(p.index)
-    if (f) {
-      f.value = p.value
-      f.dirty = true
-      f.status = 'idle'
-    }
+    if (f) { f.value = p.value; f.dirty = true; f.status = 'idle' }
   }
   ElMessage.success(`已导入 ${out.length} 个参数，可在预览中核对后下发`)
 }
 
-function clearImport() {
-  importedParams.value = []
-}
+function clearImport() { importedParams.value = [] }
 
 function currentParamValue(p: ImportedParam): string {
   const f = fieldByIndex(p.index)
@@ -435,16 +398,8 @@ async function sendAllImported() {
     const p = list[i]
     jbdBus.send(buildWriteParam(p.index, [(p.raw >> 8) & 0xff, p.raw & 0xff]))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
-    if (!resp || resp.timeout || resp.status !== 0x00) {
-      fail++
-      p.status = 'fail'
-      ElMessage.error(`写参数[${p.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
-    } else {
-      ok++
-      p.status = 'ok'
-      const f = fieldByIndex(p.index)
-      if (f) { f.status = 'ok'; f.dirty = false }
-    }
+    if (!resp || resp.timeout || resp.status !== 0x00) { fail++; p.status = 'fail'; ElMessage.error(`写参数[${p.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`) }
+    else { ok++; p.status = 'ok'; const f = fieldByIndex(p.index); if (f) { f.status = 'ok'; f.dirty = false } }
   }
   if (autoFactory.value) await exitFactory()
   progress.value = 100
@@ -455,23 +410,9 @@ async function sendAllImported() {
 function exportConfig() {
   const params = allFields.value
     .filter((f) => f.value !== null)
-    .map((f) => ({
-      index: f.index,
-      label: f.label,
-      unit: f.unit,
-      value: f.value,
-      raw: paramDisplayToRaw(f.index, f.value!),
-    }))
-  if (!params.length) {
-    ElMessage.warning('当前没有可导出的参数（请先读取或填写）')
-    return
-  }
-  const data = {
-    type: 'jbd-param-config',
-    version: '1.0',
-    exportedAt: new Date().toISOString(),
-    params,
-  }
+    .map((f) => ({ index: f.index, label: f.label, unit: f.unit, value: f.value, raw: paramDisplayToRaw(f.index, f.value!) }))
+  if (!params.length) { ElMessage.warning('当前没有可导出的参数（请先读取或填写）'); return }
+  const data = { type: 'jbd-param-config', version: '1.0', exportedAt: new Date().toISOString(), params }
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -488,95 +429,80 @@ function exportConfig() {
 
 <style scoped>
 .param-config {
-  padding: 16px;
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-6);
   overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 .param-config > * { min-width: 0; }
-.sec { background: #1a1e24; border: 1px solid #2a2e34; }
-.sec :deep(.el-card__header) {
-  padding: 10px 14px;
-  border-bottom: 1px solid #2a2e34;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+
+.sec { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); }
+.sec-h {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-default);
   flex-wrap: wrap;
 }
-.sec-title { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: #f0f1f2; }
-.sec-title .el-icon { color: #00BFA5; }
-.header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.tip { font-size: 12px; color: #6a6e74; }
-.progress-bar { padding: 0 14px; }
-.groups { display: flex; flex-direction: column; gap: 12px; }
-.group-title { font-size: 14px; font-weight: 600; color: #f0f1f2; }
+.sec-b { padding: var(--space-5); }
+.panel-title { display: flex; align-items: center; gap: var(--space-3); font-size: var(--fs-h3); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.panel-title .el-icon { color: var(--brand); }
+.header-actions { margin-left: auto; display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.tip { font-size: var(--fs-caption); color: var(--text-tertiary); }
+.progress-bar { padding: 0 var(--space-6); }
+
+.groups { display: flex; flex-direction: column; gap: var(--space-5); }
+.group-title { font-size: var(--fs-h3); font-weight: var(--fw-semibold); color: var(--text-primary); }
 .field-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  gap: var(--space-4);
 }
-@media (max-width: 1100px) {
-  .field-grid { grid-template-columns: repeat(2, 1fr); }
-}
-@media (max-width: 700px) {
-  .field-grid { grid-template-columns: 1fr; }
-}
+@media (max-width: 1100px) { .field-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 700px) { .field-grid { grid-template-columns: 1fr; } }
+
 .field {
-  background: #0c0e10;
-  border: 1px solid #2a2e34;
-  border-radius: 6px;
-  padding: 8px 10px;
+  position: relative;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
 }
-.field.ok { border-left: 3px solid #67C23A; }
-.field.fail { border-left: 3px solid #F56C6C; }
-.field-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: #b0b4ba;
-  margin-bottom: 6px;
+.field.ok { box-shadow: inset 2px 0 0 var(--ok); }
+.field.fail { box-shadow: inset 2px 0 0 var(--critical); }
+/* 脏值标记（DESIGN 4.3）：左侧 2px 警告竖条 + 右上圆点 */
+.field--dirty { box-shadow: inset 2px 0 0 var(--warning); }
+.field--dirty::after {
+  content: ''; position: absolute; top: 6px; right: 6px;
+  width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--warning);
 }
-.field-label .reg { margin-left: auto; color: #6a6e74; font-family: monospace; }
-.field-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.field-row .unit {
-  font-size: 12px;
-  color: #8a8e94;
-  min-width: 28px;
-}
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-.dot.ok { background: #67C23A; }
-.dot.fail { background: #F56C6C; }
-.import-table { margin-top: 10px; border: 1px solid #2a2e34; border-radius: 6px; overflow: hidden; }
+.field-label { display: flex; align-items: center; gap: var(--space-2); font-size: var(--fs-caption); color: var(--text-secondary); margin-bottom: var(--space-3); }
+.field-row { display: flex; align-items: center; gap: var(--space-2); }
+.field-row .unit { font-size: var(--fs-caption); color: var(--text-tertiary); min-width: 28px; }
+
+.dot { width: 8px; height: 8px; border-radius: var(--radius-pill); display: inline-block; }
+.dot.ok { background: var(--ok); }
+.dot.fail { background: var(--critical); }
+
+.import-table { margin-top: var(--space-4); border: 1px solid var(--border-default); border-radius: var(--radius-sm); overflow: hidden; }
 .import-row {
   display: grid;
   grid-template-columns: 80px 1.4fr 1.2fr 1.2fr 130px 80px;
-  gap: 8px;
-  padding: 7px 12px;
-  font-size: 13px;
-  border-bottom: 1px solid #1a1e24;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-body-sm);
+  border-bottom: 1px solid var(--border-subtle);
   align-items: center;
 }
 .import-row:last-child { border-bottom: none; }
-.import-head {
-  background: #161a1f;
-  color: #8a8e94;
-  font-size: 12px;
-}
-.import-row.ok .c-status { color: #67C23A; }
-.import-row.fail .c-status { color: #F56C6C; }
-.import-row .c-raw { font-family: 'JetBrains Mono', monospace; color: #b0b4ba; }
-.import-row .c-label { color: #f0f1f2; }
-.import-row .c-value { color: #00BFA5; }
-.import-row .muted { color: #6a6e74; }
+.import-head { background: var(--bg-raised); color: var(--text-secondary); font-size: var(--fs-caption); }
+.import-row.ok .c-status { color: var(--ok); }
+.import-row.fail .c-status { color: var(--critical); }
+.import-row .c-raw { font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; color: var(--text-secondary); }
+.import-row .c-label { color: var(--text-primary); }
+.import-row .c-value { color: var(--brand-text); font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; }
+.import-row .muted { color: var(--text-tertiary); }
 </style>
