@@ -120,17 +120,20 @@ export function parseFrame(buf: ArrayLike<number>): Frame | null {
   const b = Array.from(buf)
   const start = b.indexOf(FRAME_START)
   if (start < 0) return null
-  const end = b.indexOf(FRAME_END, start)
-  if (end < 0) return null
-  const frame = b.slice(start, end + 1)
-  if (frame.length < 7) return null
-  const cmd = frame[1]
-  const status = frame[2]
-  const len = frame[3] & 0xff
-  const data = frame.slice(4, 4 + len)
-  const hi = frame[4 + len]
-  const lo = frame[5 + len]
-  const callbackId = frame.slice(6 + len)
+  if (b.length < start + 7) return null
+
+  const cmd = b[start + 1]
+  const status = b[start + 2]
+  const len = b[start + 3] & 0xff
+  // 按长度字段定位帧尾，避免数据体中的 0x77 被误认为是帧结束
+  const endIndex = start + 6 + len
+  if (b.length < endIndex + 1) return null
+  if (b[endIndex] !== FRAME_END) return null
+
+  const data = b.slice(start + 4, start + 4 + len)
+  const hi = b[start + 4 + len]
+  const lo = b[start + 5 + len]
+  const callbackId = b.slice(endIndex + 1)
   const [chi, clo] = calcChecksum([status, len, ...data])
   const valid = chi === hi && clo === lo
   return { cmd, status, len, data, checksum: [hi, lo], callbackId, valid }

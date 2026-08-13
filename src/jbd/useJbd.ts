@@ -365,7 +365,7 @@ function handleFrame(f: Frame) {
       break
     }
     case 0x04: cellVoltages.value = parseCellVoltages(f.data); recordSample(); break
-    case 0x05: hwVersion.value = parseHardwareVersion(f.data); ElMessage.success('硬件版本: ' + hwVersion.value); break
+    case 0x05: hwVersion.value = parseHardwareVersion(f.data); break
     case 0xaa: protectCounts.value = parseProtectCounts(f.data); break
     case 0xf6: internalRes.value = parseInternalRes(f.data); break
     case 0x00: chipType.value = f.data[0]; break

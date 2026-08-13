@@ -85,7 +85,7 @@
                 <el-tag v-if="f.note" type="info" size="small" effect="plain">{{ f.note }}</el-tag>
               </div>
               <div class="field-row">
-                <!-- ASCII 字段：可编辑文本输入 + 下发按钮（多寄存器写：ascii_len 字节 → ascii_len/2 个寄存器） -->
+                <!-- ASCII 字段：可编辑文本输入 + 下发按钮（ascii_len 个寄存器 → ascii_len*2 字节） -->
                 <el-input
                   v-if="f.ascii"
                   :model-value="f.value ?? ''"
@@ -93,7 +93,7 @@
                   size="small"
                   style="flex: 1"
                   placeholder="—"
-                  :maxlength="f.ascii_len"
+                  :maxlength="(f.ascii_len ?? 8) * 2 - 1"
                   show-word-limit
                   @update:model-value="(v: any) => onAsciiInput(f, v)"
                 >
@@ -248,7 +248,8 @@ const j = useJbd()
 // ====== ASCII 解析 ======
 /** 从 0xFA 多寄存器应答中解码 ASCII 字串
  *  响应格式：[regH, regL, count, v0H, v0L, v1H, v1L, ...]
- *  常见约定：第一个寄存器低字节 = 字符串长度，后续低字节为 ASCII（高字节通常为 0）
+ *  按 PDF V12：条形码/BMS 编码/厂商信息均采用 ASCII 码传送，第一个字节 = 字符串长度，
+ *  后续字节为 ASCII 字符。寄存器按大端存放（高字节在前），因此直接顺序取 data[3..] 即为字节流。
  */
 function parseAsciiResponse(resp: any, maxBytes: number): string {
   if (!resp || resp.timeout || resp.status !== 0x00 || resp.cmd !== 0xfa) return ''
@@ -256,16 +257,20 @@ function parseAsciiResponse(resp: any, maxBytes: number): string {
   if (!data || data.length < 4) return ''
   const count = data[2]
   if (count < 1 || data.length < 3 + count * 2) return ''
-  const bytes: number[] = []
-  for (let i = 0; i < count * 2 && i < maxBytes; i++) {
-    const regIdx = Math.floor(i / 2)
-    const byte = (i % 2 === 0) ? data[4 + regIdx * 2] : data[3 + regIdx * 2]
-    bytes.push(byte)
-  }
-  // 第一字节通常是字符串实际长度
+  // 顺序取字节：data[3]=v0H, data[4]=v0L, data[5]=v1H, data[6]=v1L ...
+  const total = Math.min(count * 2, maxBytes)
+  const bytes = data.slice(3, 3 + total)
+  // 第一字节为字符串长度（字符数），剩余字节中按该长度取字符
   const len = bytes[0]
-  const strLen = (len > 0 && len < count * 2) ? len : Math.min(count * 2, maxBytes)
-  return String.fromCharCode(...bytes.slice(0, strLen)).replace(/[^\x20-\x7E]/g, '').trim()
+  if (len > 0 && len < bytes.length) {
+    return String.fromCharCode(...bytes.slice(1, 1 + len))
+      .replace(/[^\x20-\x7E]/g, '')
+      .trim()
+  }
+  // 无长度字节或长度为 0：把后续所有可打印字节当字符串
+  return String.fromCharCode(...bytes.slice(1))
+    .replace(/[^\x20-\x7E]/g, '')
+    .trim()
 }
 
 // ====== 位开关共享位图 ======
@@ -370,12 +375,14 @@ function onAsciiInput(f: FieldState, v: any) {
   f.dirty = true
 }
 
-/** ASCII 字段编码：字符串 → ascii_len 字节（不足补 0） */
+/** ASCII 字段编码：字符串 → (ascii_len 个寄存器 = ascii_len*2 字节)
+ *  按 PDF 格式：第 1 字节为字符串长度（字符数），后面紧跟 ASCII 字符，不足补 0。
+ */
 function encodeAsciiValue(f: FieldState): number[] {
-  const maxBytes = f.ascii_len ?? 8
+  const maxBytes = (f.ascii_len ?? 8) * 2
   const str = String(f.value ?? '')
-  const bytes: number[] = []
-  for (let i = 0; i < maxBytes; i++) {
+  const bytes: number[] = [str.length & 0xff]
+  for (let i = 0; i < maxBytes - 1; i++) {
     bytes.push(i < str.length ? (str.charCodeAt(i) & 0xff) : 0)
   }
   return bytes
@@ -400,7 +407,7 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
       { label: 'BMS版本号', key: 'bms-ver', index: 72, ascii: true, ascii_len: 16, readOnly: true },
       { label: 'BMS型号', key: 'bms-hw-name', index: 176, ascii: true, ascii_len: 8, readOnly: true },
       { label: '生产日期', index: 5, customDisplay: 'date', readOnly: true },
-      { label: '额定充电电压', index: 116, unit: 'V', decimals: 1, step: 0.1 },
+      { label: '额定充电电压', index: 117, unit: 'V', decimals: 1, step: 0.1 },
       { label: '额定充电电流', index: 119, unit: 'A', decimals: 0 },
       { label: '额定放电电流', index: 118, unit: 'A', decimals: 0 },
       { label: '额定放电功率', index: 120, unit: 'W', decimals: 0 },
@@ -634,10 +641,10 @@ async function readField(f: FieldState): Promise<boolean> {
     const resp = await jbdBus.onceResponse(1500, 0xfa)
     if (!resp || resp.timeout || resp.status !== 0x00) { f.status = 'fail'; return false }
     const text = parseAsciiResponse(resp, len * 2)
-    f.value = text || null
+    f.value = text
     f.dirty = false
-    f.status = text ? 'ok' : 'fail'
-    return !!text
+    f.status = 'ok'
+    return true
   }
   // date / serialRaw：读 raw 值，由 customDisplay 格式化
   if (canReadCustomDisplay && f.index !== undefined) {
@@ -668,7 +675,7 @@ async function writeField(f: FieldState): Promise<boolean> {
     const ok = await enterFactory()
     if (!ok) { f.status = 'fail'; return false }
   }
-  // ASCII 字段：多寄存器写（ascii_len 字节 → ascii_len/2 个寄存器）
+  // ASCII 字段：多寄存器写（ascii_len 个寄存器 → ascii_len*2 字节）
   if (f.ascii) {
     const bytes = encodeAsciiValue(f)
     jbdBus.send(buildWriteParam(f.index!, bytes))
