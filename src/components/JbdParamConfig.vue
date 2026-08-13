@@ -952,7 +952,7 @@ async function writeAll() {
   if (!props.connected || !dirtyCount.value) return
   // 只下发可写字段；位图字段共享同一寄存器需合并
   const dirty = allFields.value.filter(
-    (f) => f.dirty && !f.customDisplay && !f.readOnly && !isBitSwitch(f) && f.index !== undefined,
+    (f) => f.dirty && !f.customDisplay && !f.readOnly && !isBitSwitch(f) && f.index !== undefined && !f.needPassword,
   )
   if (!dirty.length) return
   busy.value = true
