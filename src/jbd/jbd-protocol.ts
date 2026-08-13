@@ -167,6 +167,15 @@ export function buildWriteParam(reg: number, values: number[]): number[] {
   const count = values.length / 2
   return buildWrite(CMD.PARAM, [(reg >> 8) & 0xff, reg & 0xff, count & 0xff, ...values])
 }
+// 蓝牙名称专用修改指令：DD 5A A2 <len> 0A <nameBytes> <chk> 77
+// 0x0A 为固定前缀子命令；校验沿用 JBD 的 calcChecksum（非 CRC16）。
+// 仅下发蓝牙名称时使用；读取蓝牙名称仍走 0xFA 参数寄存器 88~103（见 JbdParamConfig）。
+export function buildSetBtName(name: string): number[] {
+  const bytes: number[] = [0x0a]
+  const str = String(name ?? '')
+  for (let i = 0; i < str.length; i++) bytes.push(str.charCodeAt(i) & 0xff)
+  return buildWrite(0xa2, bytes)
+}
 export function buildBtPair(password: number[]): number[] {
   return buildWrite(CMD.BT_PAIR, [0x06, ...password.map((d) => d & 0xff)])
 }
@@ -189,7 +198,11 @@ export function parseCellVoltages(data: number[]): number[] {
   return cells
 }
 export function parseHardwareVersion(data: number[]): string {
-  return data.map((b) => String.fromCharCode(b & 0xff)).join('')
+  // 部分 BMS 固件会在数据区前加 0x00 占位（与读芯片类型返回 2 字节同源），
+  // 去掉前导空字节，避免版本号前出现不可见字符。
+  let start = 0
+  while (start < data.length && data[start] === 0) start++
+  return data.slice(start).map((b) => String.fromCharCode(b & 0xff)).join('')
 }
 const PROTECT_FIELDS = [
   '短路保护', '充电过流', '放电过流', '单体过压', '单体欠压',

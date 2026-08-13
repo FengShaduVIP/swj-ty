@@ -198,6 +198,58 @@ export function paramDispUnit(reg: number): string {
   return defOf(reg)?.unit || ''
 }
 
+// ============================ 短路 / 二级过流保护（复合寄存器） ============================
+// 说明：寄存器 84（二级过流保护设置）、85（短路保护设置）各为 1 个 16 位字，
+//   高字节（bit15~8）= 保护值档位（SCD_T / OCD_T，0~15）
+//   低字节（bit7~0） = 延迟档位（SCD_D / OCD_D，0~15）
+// 不同芯片方案的档位→真实值换算公式不同，下拉框只存 0~15 档位，下发时合成 16 位字。
+
+export interface ScdParts {
+  /** 保护值档位 0~15（高字节） */
+  level: number
+  /** 延迟档位 0~15（低字节） */
+  delay: number
+}
+
+/** 16 位原始值 → 高低字节档位 */
+export function splitScd(raw: number): ScdParts {
+  const v = raw & 0xffff
+  return { level: (v >> 8) & 0x0f, delay: v & 0x0f }
+}
+
+/** 高低字节档位 → 16 位原始值（用于下发） */
+export function combineScd(level: number, delay: number): number {
+  return (((level & 0x0f) << 8) | (delay & 0x0f)) & 0xffff
+}
+
+/**
+ * 保护值档位 → 真实电压(mV)
+ *   凹凸(1): 20*T + 20；松下(2): 40*T + 20；未知方案默认凹凸。
+ */
+export function scdLevelMv(chipType: number | null, level: number): number {
+  const t = level & 0x0f
+  if (chipType === 2) return 40 * t + 20
+  return 20 * t + 20
+}
+
+/**
+ * 延迟档位 → 真实延迟(uS)
+ *   凹凸(1): 62.5*D + 62.5；松下(2): 62.5*D + 31.25；未知方案默认凹凸。
+ */
+export function scdDelayUs(chipType: number | null, delay: number): number {
+  const d = delay & 0x0f
+  if (chipType === 2) return 62.5 * d + 31.25
+  return 62.5 * d + 62.5
+}
+
+/** 下拉框 option label：第 N 档 → 真实值，如 『档2 · 40 mV』 */
+export function scdLevelLabel(chipType: number | null, level: number): string {
+  return `档${level} · ${scdLevelMv(chipType, level)} mV`
+}
+export function scdDelayLabel(chipType: number | null, delay: number): string {
+  return `档${delay} · ${scdDelayUs(chipType, delay)} µS`
+}
+
 /** 显示用格式化字符串（带合适小数位 / 十六进制 / 日期） */
 export function paramFormat(reg: number, raw: number): string {
   const def = defOf(reg)

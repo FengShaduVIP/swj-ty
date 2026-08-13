@@ -130,6 +130,30 @@
                 <span v-else-if="f.customDisplay" class="custom-val mono">{{ customDisplayValue(f) }}</span>
                 <!-- TODO / 只读字段（无可写寄存器） -->
                 <span v-else-if="f.readOnly" class="custom-val mono">—</span>
+                <!-- 下拉选项字段 / 复合保护字段(scd)：显示友好名称，下发原始 value -->
+                <template v-else-if="f.options || f.kind === 'scd'">
+                  <el-select
+                    :model-value="f.value"
+                    size="small"
+                    style="flex: 1"
+                    :disabled="!connected || f.status === 'reading'"
+                    @update:model-value="(v: any) => onSelectChange(f, v)"
+                  >
+                    <el-option
+                      v-for="opt in (f.kind === 'scd' ? scdOptions(f) : f.options)"
+                      :key="opt.value"
+                      :label="opt.label"
+                      :value="opt.value"
+                    />
+                  </el-select>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    :loading="f.status === 'writing'"
+                    :disabled="!canWrite(f)"
+                    @click="writeField(f)"
+                  >下发</el-button>
+                </template>
                 <!-- 普通数值字段：单位放 suffix，下发按钮放 append -->
                 <el-input
                   v-else
@@ -182,10 +206,10 @@ import { ElMessage } from 'element-plus'
 import { Setting, Refresh, Upload, FolderOpened, Download, Files, Promotion } from '@element-plus/icons-vue'
 import { jbdBus } from '@/jbd/jbd-bus'
 import {
-  buildReadParam, buildWriteParam,
+  buildReadParam, buildWriteParam, buildSetBtName,
   buildEnterFactory, buildExitFactory,
 } from '@/jbd/jbd-protocol'
-import { paramRawToDisplay, paramDisplayToRaw, paramFormat } from '@/jbd/jbd-params'
+import { paramRawToDisplay, paramDisplayToRaw, paramFormat, splitScd, combineScd, scdLevelLabel, scdDelayLabel } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
 import StatusBadge from './StatusBadge.vue'
 
@@ -215,6 +239,11 @@ interface FieldDef {
   customDisplay?: CustomDisplayKind
   /** 跨列占满（用于检流阻值等） */
   fullWidth?: boolean
+  /** 下拉选项字段：value 为下发到 BMS 的原始寄存器值 */
+  options?: { label: string; value: number }[]
+  /** 复合保护字段：单个寄存器 16 位，高字节=保护值档位(level)、低字节=延迟档位(delay) */
+  kind?: 'scd'
+  scdPart?: 'level' | 'delay'
 }
 
 interface FieldState extends FieldDef {
@@ -369,6 +398,28 @@ function onNumInput(f: FieldState, v: any) {
   f.dirty = true
 }
 
+/** 下拉选项字段输入：直接存原始 value 并标脏 */
+function onSelectChange(f: FieldState, v: any) {
+  f.value = Number(v)
+  f.dirty = true
+}
+
+// ====== 复合保护字段（scd）：一个寄存器 16 位，高字节=保护值档位(level)、低字节=延迟档位(delay) ======
+/** 根据芯片方案生成下拉选项（0~15 共 16 档，label 显示真实物理量） */
+function scdOptions(f: FieldState): { label: string; value: number }[] {
+  const chip = j.chipType.value
+  const fn = f.scdPart === 'delay' ? scdDelayLabel : scdLevelLabel
+  const out: { label: string; value: number }[] = []
+  for (let i = 0; i <= 15; i++) out.push({ label: fn(chip, i), value: i })
+  return out
+}
+/** 取同 index 的另一个 part 字段（用于合成下发） */
+function scdPeer(f: FieldState): FieldState | undefined {
+  return allFields.value.find(
+    (x) => x.index === f.index && x.kind === 'scd' && x.scdPart !== f.scdPart,
+  )
+}
+
 /** ASCII 字段输入：直接存字符串并标脏 */
 function onAsciiInput(f: FieldState, v: any) {
   f.value = typeof v === 'string' ? v : ''
@@ -419,14 +470,14 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
     fields: [
       { label: '充电过流保护', index: 24, unit: 'mA', decimals: 0, step: 10 },
       { label: '充电过流延时', index: 52, unit: 'S', decimals: 0 },
-      { label: '充电过流释放延时', index: 53, unit: 'S', decimals: 0 },
+      { label: '充电过流恢复延时', index: 53, unit: 'S', decimals: 0 },
       { label: '放电过流保护', index: 25, unit: 'mA', decimals: 0, step: 10 },
       { label: '放电过流延时', index: 54, unit: 'S', decimals: 0 },
-      { label: '放电过流释放延时', index: 55, unit: 'S', decimals: 0 },
-      { label: '二级过流保护延时', key: 'l2-oc-pd', index: 42, unit: '', decimals: 0, readOnly: true, note: '见IC' },
-      { label: '二级过流延时', key: 'l2-oc-d', index: 42, unit: '', decimals: 0, readOnly: true, note: '见IC' },
-      { label: '短路保护延时', key: 'sc-pd', readOnly: true, note: '需协议补充' },
-      { label: '短路保护释放延时', index: 43, unit: 'S', decimals: 0 },
+      { label: '放电过流恢复延时', index: 55, unit: 'S', decimals: 0 },
+      { label: '二级过流保护', index: 84, kind: 'scd', scdPart: 'level', note: '见IC' },
+      { label: '二级过流延时', index: 84, kind: 'scd', scdPart: 'delay', note: '见IC' },
+      { label: '短路保护', index: 85, kind: 'scd', scdPart: 'level', note: '见IC' },
+      { label: '短路保护延时', index: 85, kind: 'scd', scdPart: 'delay', note: '见IC' },
     ],
   },
 
@@ -657,6 +708,33 @@ async function readField(f: FieldState): Promise<boolean> {
     f.status = 'ok'
     return true
   }
+  // 复合保护字段（scd）：高字节=保护值档位、低字节=延迟档位
+  if (f.kind === 'scd') {
+    jbdBus.send(buildReadParam(f.index!, 1))
+    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const raw = parseParamResponse(resp)
+    if (raw === null) { f.status = 'fail'; return false }
+    const { level, delay } = splitScd(raw)
+    const peer = scdPeer(f)
+    if (f.scdPart === 'level') f.value = level
+    else f.value = delay
+    if (peer) peer.value = f.scdPart === 'level' ? delay : level
+    f.dirty = false
+    f.status = 'ok'
+    if (peer) { peer.dirty = false; peer.status = 'ok' }
+    return true
+  }
+  // 下拉选项字段：value 直接存原始寄存器值
+  if (f.options) {
+    jbdBus.send(buildReadParam(f.index!, 1))
+    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const raw = parseParamResponse(resp)
+    if (raw === null) { f.status = 'fail'; return false }
+    f.value = raw & 0xffff
+    f.dirty = false
+    f.status = 'ok'
+    return true
+  }
   // 普通数值
   jbdBus.send(buildReadParam(f.index!, 1))
   const resp = await jbdBus.onceResponse(1500, 0xfa)
@@ -677,8 +755,58 @@ async function writeField(f: FieldState): Promise<boolean> {
   }
   // ASCII 字段：多寄存器写（ascii_len 个寄存器 → ascii_len*2 字节）
   if (f.ascii) {
+    // 蓝牙名称：走专用修改指令 DD 5A A2 <len> 0A <name> <chk> 77（校验仍用 calcChecksum）
+    if (f.key === 'bt-name') {
+      jbdBus.send(buildSetBtName(String(f.value ?? '')))
+      const resp = await jbdBus.onceResponse(1500, 0xa2)
+      if (autoFactory.value) await exitFactory()
+      if (!resp || resp.timeout || resp.status !== 0x00) {
+        f.status = 'fail'
+        ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
+        return false
+      }
+      f.status = 'ok'
+      f.dirty = false
+      return true
+    }
     const bytes = encodeAsciiValue(f)
     jbdBus.send(buildWriteParam(f.index!, bytes))
+    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    if (autoFactory.value) await exitFactory()
+    if (!resp || resp.timeout || resp.status !== 0x00) {
+      f.status = 'fail'
+      ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
+      return false
+    }
+    f.status = 'ok'
+    f.dirty = false
+    return true
+  }
+  // 复合保护字段（scd）：与 peer 合并成 16 位字再下发
+  if (f.kind === 'scd') {
+    const peer = scdPeer(f)
+    const peerVal = peer && peer.value != null ? Number(peer.value) : 0
+    const selfVal = f.value != null ? Number(f.value) : 0
+    const level = f.scdPart === 'level' ? selfVal : peerVal
+    const delay = f.scdPart === 'delay' ? selfVal : peerVal
+    const raw = combineScd(level, delay) & 0xffff
+    jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
+    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    if (autoFactory.value) await exitFactory()
+    if (!resp || resp.timeout || resp.status !== 0x00) {
+      f.status = 'fail'
+      ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
+      return false
+    }
+    f.status = 'ok'
+    f.dirty = false
+    if (peer) { peer.status = 'ok'; peer.dirty = false }
+    return true
+  }
+  // 下拉选项字段：value 即原始寄存器值，直接下发
+  if (f.options) {
+    const raw = Number(f.value ?? 0) & 0xffff
+    jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
     if (autoFactory.value) await exitFactory()
     if (!resp || resp.timeout || resp.status !== 0x00) {
@@ -705,14 +833,32 @@ async function writeField(f: FieldState): Promise<boolean> {
   return true
 }
 
-async function readGroup(g: { title: string; fields: FieldState[] }) {
-  if (!props.connected) return
-  busy.value = true
-  let ok = 0, fail = 0, skip = 0
-  for (const f of g.fields) {
+// 计算去重后的「读取单元」：位开关共用同一寄存器（按 bitIndex 去重）、
+// 重复 index 也只读一次；非 date/serialRaw 的 customDisplay、以及无 index 的只读项直接跳过。
+// 这样「读取全部」对温度探头(16 路 NTC 共用寄存器 30)、功能设置(共用寄存器 29)等
+// 位开关组只发一帧，避免对同一寄存器重复读取。
+function planReadUnits(fields: FieldState[]): { units: FieldState[]; skip: number } {
+  const seen = new Set<string>()
+  const units: FieldState[] = []
+  let skip = 0
+  for (const f of fields) {
     const canReadCustomDisplay = f.customDisplay === 'date' || f.customDisplay === 'serialRaw'
     if (f.customDisplay && !canReadCustomDisplay) { skip++; continue }
     if (f.readOnly && f.index === undefined) { skip++; continue }
+    const key = isBitSwitch(f) ? `bit:${f.bitIndex}` : `idx:${f.index}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    units.push(f)
+  }
+  return { units, skip }
+}
+
+async function readGroup(g: { title: string; fields: FieldState[] }) {
+  if (!props.connected) return
+  const { units, skip } = planReadUnits(g.fields)
+  busy.value = true
+  let ok = 0, fail = 0
+  for (const f of units) {
     const r = await readField(f)
     if (r) ok++; else fail++
   }
@@ -723,16 +869,12 @@ async function readGroup(g: { title: string; fields: FieldState[] }) {
 
 async function readAll() {
   if (!props.connected) return
+  const { units, skip } = planReadUnits(allFields.value)
   busy.value = true
-  const fields = allFields.value
-  let ok = 0, fail = 0, skip = 0
-  for (let i = 0; i < fields.length; i++) {
-    progress.value = Math.round(((i) / fields.length) * 100)
-    const f = fields[i]
-    const canReadCustomDisplay = f.customDisplay === 'date' || f.customDisplay === 'serialRaw'
-    if (f.customDisplay && !canReadCustomDisplay) { skip++; continue }
-    if (f.readOnly && f.index === undefined) { skip++; continue }
-    const r = await readField(f)
+  let ok = 0, fail = 0
+  for (let i = 0; i < units.length; i++) {
+    progress.value = Math.round(((i) / units.length) * 100)
+    const r = await readField(units[i])
     if (r) ok++; else fail++
   }
   progress.value = 100
@@ -758,11 +900,56 @@ async function writeAll() {
   for (let i = 0; i < dirty.length; i++) {
     progress.value = Math.round(((i) / dirty.length) * 100)
     const f = dirty[i]
+    // 复合保护字段：只由 level part 代表整个寄存器合成下发，delay part 跳过
+    if (f.kind === 'scd') {
+      if (f.scdPart === 'delay') { f.status = 'ok'; continue }
+      const peer = scdPeer(f)
+      const peerVal = peer && peer.value != null ? Number(peer.value) : 0
+      const selfVal = f.value != null ? Number(f.value) : 0
+      const raw = combineScd(selfVal, peerVal) & 0xffff
+      f.status = 'writing'
+      jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
+      const resp = await jbdBus.onceResponse(1500, 0xfa)
+      if (!resp || resp.timeout || resp.status !== 0x00) {
+        f.status = 'fail'; fail++
+        ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
+      } else {
+        f.status = 'ok'; f.dirty = false; ok++
+        if (peer) { peer.status = 'ok'; peer.dirty = false }
+      }
+      continue
+    }
     f.status = 'writing'
-    // ASCII 字段：多寄存器写
+    // ASCII 字段：多寄存器写（蓝牙名称走专用 0xA2 指令）
     if (f.ascii) {
+      if (f.key === 'bt-name') {
+        jbdBus.send(buildSetBtName(String(f.value ?? '')))
+        const resp = await jbdBus.onceResponse(1500, 0xa2)
+        if (!resp || resp.timeout || resp.status !== 0x00) {
+          f.status = 'fail'; fail++
+          ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
+        } else {
+          f.status = 'ok'; f.dirty = false
+          ok++
+        }
+        continue
+      }
       const bytes = encodeAsciiValue(f)
       jbdBus.send(buildWriteParam(f.index!, bytes))
+      const resp = await jbdBus.onceResponse(1500, 0xfa)
+      if (!resp || resp.timeout || resp.status !== 0x00) {
+        f.status = 'fail'; fail++
+        ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
+      } else {
+        f.status = 'ok'; f.dirty = false
+        ok++
+      }
+      continue
+    }
+    // 下拉选项字段：value 即原始寄存器值
+    if (f.options) {
+      const raw = Number(f.value ?? 0) & 0xffff
+      jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
       const resp = await jbdBus.onceResponse(1500, 0xfa)
       if (!resp || resp.timeout || resp.status !== 0x00) {
         f.status = 'fail'; fail++

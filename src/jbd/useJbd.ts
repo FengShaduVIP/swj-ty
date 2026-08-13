@@ -28,7 +28,8 @@ const protectCounts = ref<Record<string, number>>({})
 const chipType = ref<number | null>(null)
 const chipTypeName = computed(() => {
   if (chipType.value == null) return '—'
-  return CHIP_TYPES[chipType.value] ?? '未知方案'
+  const name = CHIP_TYPES[chipType.value] ?? '未知方案'
+  return `${name} (0x${chipType.value.toString(16).padStart(2, '0')})`
 })
 const paramResult = ref<{ reg: number; values: number[] } | null>(null)
 const ackHistory = ref<string[]>([])
@@ -368,7 +369,9 @@ function handleFrame(f: Frame) {
     case 0x05: hwVersion.value = parseHardwareVersion(f.data); break
     case 0xaa: protectCounts.value = parseProtectCounts(f.data); break
     case 0xf6: internalRes.value = parseInternalRes(f.data); break
-    case 0x00: chipType.value = f.data[0]; break
+    // 芯片类型：协议规定一个数据字节，但部分 BMS 固件会返回 2 字节（前导 0x00 + 类型值），
+    // 取最后一个字节作为真正的芯片类型，兼容 len=1 和 len=2 两种响应。
+    case 0x00: chipType.value = f.data.length ? f.data[f.data.length - 1] : null; break
     case 0xfa:
       if (f.data.length >= 3) {
         const reg = (f.data[0] << 8) | f.data[1]
