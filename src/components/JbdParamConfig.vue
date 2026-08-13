@@ -20,9 +20,6 @@
           <el-button size="small" @click="exportConfig"><el-icon><Download /></el-icon> 导出配置</el-button>
         </div>
       </header>
-      <div class="sec-b">
-        <div class="tip">按分组读取/写入 0xFA 参数寄存器；点击每行右侧「读」或「下发」可单独操作。写参数时程序会自动进入→写入→退出工厂模式，无需手动操作。</div>
-      </div>
     </section>
 
     <div v-if="busy" class="progress-bar">
@@ -37,7 +34,7 @@
       :close-on-click-modal="false"
       @closed="clearImport"
     >
-      <div class="tip">以下为配置文件解析出的参数（中文文件名亦可），核对无误后点击「一键下发所有参数」批量写入目标设备，下发结果将在此处实时反馈。</div>
+      <div class="tip">以下为配置文件解析出的参数，核对无误后点击「一键下发所有参数」批量写入目标设备，下发结果将在此处实时反馈。</div>
       <div class="import-table">
         <div class="import-row import-head">
           <span class="c-idx">寄存器</span>
@@ -50,7 +47,7 @@
         <div v-for="(p, i) in importedParams" :key="i" class="import-row" :class="p.status">
           <span class="c-idx">[{{ p.index }}]</span>
           <span class="c-label">{{ p.label }}</span>
-          <span class="c-value">{{ p.value }} {{ p.unit }}</span>
+          <span class="c-value" :class="{ 'value-diff': isSendDiff(p) }">{{ p.value }} {{ p.unit }}</span>
           <span class="c-current">{{ currentParamValue(p) }}</span>
           <span class="c-raw">0x{{ p.raw.toString(16).padStart(4, '0').toUpperCase() }}</span>
           <span class="c-status">
@@ -231,6 +228,7 @@ const props = defineProps<{ connected: boolean }>()
 type ImportStatus = 'ok' | 'fail' | undefined
 interface ImportedParam {
   index: number; label: string; unit: string; value: number; raw: number; status?: ImportStatus
+  current?: number | null  // 导入前设备上真实的当前值，用于与下发值比对
 }
 const importedParams = ref<ImportedParam[]>([])
 const importDialogVisible = ref(false)
@@ -408,7 +406,96 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
       { label: '额定放电功率', index: 120, unit: 'W', decimals: 0 },
     ],
   },
-  // 2. 保护参数（14 项 / 3 列 × 5 行）
+  // 2. 电流设置（10 项 / 3 列 × 4 行）
+  {
+    title: '电流设置',
+    fields: [
+      { label: '充电过流保护', index: 24, unit: 'mA', decimals: 0, step: 10 },
+      { label: '充电过流延时', index: 52, unit: 'S', decimals: 0 },
+      { label: '充电过流释放延时', index: 53, unit: 'S', decimals: 0 },
+      { label: '放电过流保护', index: 25, unit: 'mA', decimals: 0, step: 10 },
+      { label: '放电过流延时', index: 54, unit: 'S', decimals: 0 },
+      { label: '放电过流释放延时', index: 55, unit: 'S', decimals: 0 },
+      { label: '二级过流保护延时', key: 'l2-oc-pd', index: 42, unit: '', decimals: 0, readOnly: true, note: '见IC' },
+      { label: '二级过流延时', key: 'l2-oc-d', index: 42, unit: '', decimals: 0, readOnly: true, note: '见IC' },
+      { label: '短路保护延时', key: 'sc-pd', readOnly: true, note: '需协议补充' },
+      { label: '短路保护释放延时', index: 43, unit: 'S', decimals: 0 },
+    ],
+  },
+
+  // 3. 容量电压（12 项 / 3 列 × 4 行）
+  {
+    title: '容量电压',
+    fields: [
+      { label: '10%', index: 109, unit: 'mV', decimals: 0 },
+      { label: '20%', index: 37, unit: 'mV', decimals: 0 },
+      { label: '30%', index: 108, unit: 'mV', decimals: 0 },
+      { label: '40%', index: 36, unit: 'mV', decimals: 0 },
+      { label: '50%', index: 107, unit: 'mV', decimals: 0 },
+      { label: '60%', index: 35, unit: 'mV', decimals: 0 },
+      { label: '70%', index: 106, unit: 'mV', decimals: 0 },
+      { label: '80%', index: 34, unit: 'mV', decimals: 0 },
+      { label: '90%', index: 105, unit: 'mV', decimals: 0 },
+      { label: '100%', index: 111, unit: 'mV', decimals: 0 },
+      { label: '置满电压', index: 2, unit: 'mV', decimals: 0 },
+      { label: '置空电压', index: 3, unit: 'mV', decimals: 0 },
+    ],
+  },
+  // 4. 初始化设置（3 项 / 3 列 × 1 行）
+  {
+    title: '初始化设置',
+    fields: [
+      { label: '标称容量', index: 0, unit: 'Ah', decimals: 2, step: 0.01 },
+      { label: '自放电率', key: 'self-disc', readOnly: true, note: '需协议补充' },
+      { label: 'SOC的比例', key: 'soc-ratio', readOnly: true, note: '需协议补充' },
+    ],
+  },
+  // 5. 系统设置（5 项 / 3 列 × 2 行）
+  {
+    title: '系统设置',
+    fields: [
+      { label: '均衡电流', key: 'bal-current-2', readOnly: true, note: '需协议补充' },
+      { label: '休眠时间', index: 122, unit: 'S', decimals: 0 },
+      { label: '容量修正间隔', index: 113, unit: 'S', decimals: 0 },
+      { label: '序列号', index: 6, customDisplay: 'serialRaw', readOnly: true },
+      { label: '循环次数', index: 7, unit: '次', decimals: 0 },
+    ],
+  },
+  // 6. 均衡设置（2 项 / 3 列 × 1 行）
+  {
+    title: '均衡设置',
+    fields: [
+      { label: '均衡电流', key: 'bal-current', readOnly: true, note: '需协议补充' },
+      { label: '均衡精度', index: 27, unit: 'mV', decimals: 0 },
+    ],
+  },
+  // 7. 检流电阻（独立模块：index 28；导入模板时不随下发）
+  {
+    title: '检流电阻',
+    cols: 1,
+    fields: [
+      { label: '检流阻值', index: 28, unit: 'mΩ', decimals: 2, step: 0.01, note: '独立配置' },
+    ],
+  },
+  // 8. 温度设置（12 项 / 3 列 × 4 行）
+  {
+    title: '温度设置',
+    fields: [
+      { label: '充电高温保护', index: 8, unit: '℃', decimals: 1 },
+      { label: '充电高温恢复', index: 9, unit: '℃', decimals: 1 },
+      { label: '充电高温延时', index: 45, unit: 'S', decimals: 0 },
+      { label: '充电低温保护', index: 10, unit: '℃', decimals: 1 },
+      { label: '充电低温恢复', index: 11, unit: '℃', decimals: 1 },
+      { label: '充电低温延时', index: 44, unit: 'S', decimals: 0 },
+      { label: '放电高温保护', index: 12, unit: '℃', decimals: 1 },
+      { label: '放电高温恢复', index: 13, unit: '℃', decimals: 1 },
+      { label: '放电高温延时', index: 47, unit: 'S', decimals: 0 },
+      { label: '放电低温保护', index: 14, unit: '℃', decimals: 1 },
+      { label: '放电低温恢复', index: 15, unit: '℃', decimals: 1 },
+      { label: '放电低温延时', index: 46, unit: 'S', decimals: 0 },
+    ],
+  },
+  // 9. 保护参数（14 项 / 3 列 × 5 行）
   {
     title: '保护参数',
     fields: [
@@ -428,95 +515,8 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
       { label: '硬件欠压保护', index: 39, unit: 'mV', decimals: 0 },
     ],
   },
-  // 3. 电流设置（10 项 / 3 列 × 4 行）
-  {
-    title: '电流设置',
-    fields: [
-      { label: '充电过流保护', index: 24, unit: 'mA', decimals: 0, step: 10 },
-      { label: '充电过流延时', index: 52, unit: 'S', decimals: 0 },
-      { label: '充电过流释放延时', index: 53, unit: 'S', decimals: 0 },
-      { label: '放电过流保护', index: 25, unit: 'mA', decimals: 0, step: 10 },
-      { label: '放电过流延时', index: 54, unit: 'S', decimals: 0 },
-      { label: '放电过流释放延时', index: 55, unit: 'S', decimals: 0 },
-      { label: '二级过流保护延时', key: 'l2-oc-pd', index: 42, unit: '', decimals: 0, readOnly: true, note: '见IC' },
-      { label: '二级过流延时', key: 'l2-oc-d', index: 42, unit: '', decimals: 0, readOnly: true, note: '见IC' },
-      { label: '短路保护延时', key: 'sc-pd', readOnly: true, note: '需协议补充' },
-      { label: '短路保护释放延时', index: 43, unit: 'S', decimals: 0 },
-    ],
-  },
-  // 4. 温度设置（12 项 / 3 列 × 4 行）
-  {
-    title: '温度设置',
-    fields: [
-      { label: '充电高温保护', index: 8, unit: '℃', decimals: 1 },
-      { label: '充电高温恢复', index: 9, unit: '℃', decimals: 1 },
-      { label: '充电高温延时', index: 45, unit: 'S', decimals: 0 },
-      { label: '充电低温保护', index: 10, unit: '℃', decimals: 1 },
-      { label: '充电低温恢复', index: 11, unit: '℃', decimals: 1 },
-      { label: '充电低温延时', index: 44, unit: 'S', decimals: 0 },
-      { label: '放电高温保护', index: 12, unit: '℃', decimals: 1 },
-      { label: '放电高温恢复', index: 13, unit: '℃', decimals: 1 },
-      { label: '放电高温延时', index: 47, unit: 'S', decimals: 0 },
-      { label: '放电低温保护', index: 14, unit: '℃', decimals: 1 },
-      { label: '放电低温恢复', index: 15, unit: '℃', decimals: 1 },
-      { label: '放电低温延时', index: 46, unit: 'S', decimals: 0 },
-    ],
-  },
-  // 5. 均衡设置（2 项 / 3 列 × 1 行）
-  {
-    title: '均衡设置',
-    fields: [
-      { label: '均衡电流', key: 'bal-current', readOnly: true, note: '需协议补充' },
-      { label: '均衡精度', index: 27, unit: 'mV', decimals: 0 },
-    ],
-  },
-  // 6. 容量电压（12 项 / 3 列 × 4 行）
-  {
-    title: '容量电压',
-    fields: [
-      { label: '10%', index: 109, unit: 'mV', decimals: 0 },
-      { label: '20%', index: 37, unit: 'mV', decimals: 0 },
-      { label: '30%', index: 108, unit: 'mV', decimals: 0 },
-      { label: '40%', index: 36, unit: 'mV', decimals: 0 },
-      { label: '50%', index: 107, unit: 'mV', decimals: 0 },
-      { label: '60%', index: 35, unit: 'mV', decimals: 0 },
-      { label: '70%', index: 106, unit: 'mV', decimals: 0 },
-      { label: '80%', index: 34, unit: 'mV', decimals: 0 },
-      { label: '90%', index: 105, unit: 'mV', decimals: 0 },
-      { label: '100%', index: 111, unit: 'mV', decimals: 0 },
-      { label: '置满电压', index: 2, unit: 'mV', decimals: 0 },
-      { label: '置空电压', index: 3, unit: 'mV', decimals: 0 },
-    ],
-  },
-  // 7. 初始化设置（3 项 / 3 列 × 1 行）
-  {
-    title: '初始化设置',
-    fields: [
-      { label: '标称容量', index: 0, unit: 'Ah', decimals: 2, step: 0.01 },
-      { label: '自放电率', key: 'self-disc', readOnly: true, note: '需协议补充' },
-      { label: 'SOC的比例', key: 'soc-ratio', readOnly: true, note: '需协议补充' },
-    ],
-  },
-  // 8. 系统设置（5 项 / 3 列 × 2 行）
-  {
-    title: '系统设置',
-    fields: [
-      { label: '均衡电流', key: 'bal-current-2', readOnly: true, note: '需协议补充' },
-      { label: '休眠时间', index: 122, unit: 'S', decimals: 0 },
-      { label: '容量修正间隔', index: 113, unit: 'S', decimals: 0 },
-      { label: '序列号', index: 6, customDisplay: 'serialRaw', readOnly: true },
-      { label: '循环次数', index: 7, unit: '次', decimals: 0 },
-    ],
-  },
-  // 8b. 检流电阻（独立模块：index 28；导入模板时不随下发）
-  {
-    title: '检流电阻',
-    cols: 1,
-    fields: [
-      { label: '检流阻值', index: 28, unit: 'mΩ', decimals: 2, step: 0.01, note: '独立配置' },
-    ],
-  },
-  // 9. 功能设置（11 项 / 3 列 × 4 行，末行 + 应用设置按钮）
+
+  // 10. 功能设置（11 项 / 3 列 × 4 行，末行 + 应用设置按钮）
   {
     title: '功能设置',
     action: { label: '应用设置', fn: (g) => writeGroupBitmap(g, 29) },
@@ -534,7 +534,7 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
       { label: '蜂鸣器续延', key: 'cfg-buzzer', bitIndex: 29, bit: 9 },
     ],
   },
-  // 10. 温度探头配置（PDF：序号 30 = 温度探头配置，2 字节共 16 bit，每位对应一路探头使能 / 3 列 × 6 行 + 应用配置按钮）
+  // 11. 温度探头配置（PDF：序号 30 = 温度探头配置，2 字节共 16 bit，每位对应一路探头使能 / 3 列 × 6 行 + 应用配置按钮）
   {
     title: '温度探头配置',
     action: { label: '应用配置', fn: (g) => writeGroupBitmap(g, 30) },
@@ -860,7 +860,9 @@ function applyImport(data: any) {
     const r = ((Math.trunc(raw) & 0xffff) >>> 0) & 0xffff
     const def = fieldByIndex(index)
     const display = def ? paramRawToDisplay(index, r) : r
-    out.push({ index, label: item?.label || def?.label || `寄存器[${index}]`, unit: item?.unit || def?.unit || '', value: display, raw: r })
+    // 在 applyImport 覆盖 f.value 之前，先记录设备上的真实当前值
+    const current = def ? def.value : null
+    out.push({ index, label: item?.label || def?.label || `寄存器[${index}]`, unit: item?.unit || def?.unit || '', value: display, raw: r, current })
   }
   if (!out.length) { ElMessage.error('未找到有效参数（请检查文件内容）'); return }
   importedParams.value = out
@@ -869,16 +871,21 @@ function applyImport(data: any) {
     const f = fieldByIndex(p.index)
     if (f) { f.value = p.value; f.dirty = true; f.status = 'idle' }
   }
-  const skipTip = skipped ? `（已跳过 ${skipped} 个检流电阻参数）` : ''
-  ElMessage.success(`已导入 ${out.length} 个参数，可在预览中核对后下发${skipTip}`)
+  ElMessage.success(`已导入 ${out.length} 个参数，可在预览中核对后下发`)
 }
 
 function clearImport() { importedParams.value = [] }
 
 function currentParamValue(p: ImportedParam): string {
-  const f = fieldByIndex(p.index)
-  if (!f || f.value === null) return '—'
-  return `${f.value} ${f.unit}`
+  if (p.current === null || p.current === undefined) return '—'
+  return `${p.current} ${p.unit}`
+}
+
+// 下发值（配置文件）与设备当前值不同 → 需要高亮提示
+function isSendDiff(p: ImportedParam): boolean {
+  const c = p.current
+  if (c === null || c === undefined) return false
+  return Number(c) !== p.value
 }
 
 async function sendAllImported() {
@@ -1054,7 +1061,15 @@ function exportConfig() {
   justify-content: center;
 }
 
-.import-table { margin-top: var(--space-4); border: 1px solid var(--border-default); border-radius: var(--radius-sm); overflow: hidden; }
+/* 弹窗本身不滚动，改由表格内部滚动；表头 sticky 固定 */
+.import-table {
+  margin-top: var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  max-height: 55vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 .import-row {
   display: grid;
   grid-template-columns: 80px 1.4fr 1.2fr 1.2fr 130px 80px;
@@ -1065,11 +1080,29 @@ function exportConfig() {
   align-items: center;
 }
 .import-row:last-child { border-bottom: none; }
-.import-head { background: var(--bg-raised); color: var(--text-secondary); font-size: var(--fs-caption); }
+.import-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-size: var(--fs-caption);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
 .import-row.ok .c-status { color: var(--ok); }
 .import-row.fail .c-status { color: var(--critical); }
 .import-row .c-raw { font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; color: var(--text-secondary); }
 .import-row .c-label { color: var(--text-primary); }
 .import-row .c-value { color: var(--brand-text); font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; }
+/* 下发值与设备当前值不同 → 高亮突出 */
+.import-row .c-value.value-diff {
+  color: var(--warning);
+  font-weight: 600;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+  margin: 0 calc(var(--space-2) * -1);
+}
 .import-row .muted { color: var(--text-tertiary); }
 </style>
