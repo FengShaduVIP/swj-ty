@@ -478,6 +478,7 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
       { label: '二级过流延时', index: 84, kind: 'scd', scdPart: 'delay', note: '见IC' },
       { label: '短路保护', index: 85, kind: 'scd', scdPart: 'level', note: '见IC' },
       { label: '短路保护延时', index: 85, kind: 'scd', scdPart: 'delay', note: '见IC' },
+      { label: '短路释放延时', index: 87, unit: 'S', decimals: 0 },
     ],
   },
 
