@@ -65,6 +65,30 @@
       </template>
     </el-dialog>
 
+    <!-- 下发密码校验弹窗（仅检流阻值等 needPassword 字段） -->
+    <el-dialog
+      v-model="pwdDialogVisible"
+      title="下发确认"
+      width="360px"
+      :close-on-click-modal="false"
+      :show-close="false"
+      @closed="onPwdCancel"
+    >
+      <div class="tip" style="margin-bottom: 12px">该参数下发需要输入密码确认。</div>
+      <el-input
+        v-model="pwdInput"
+        type="password"
+        show-password
+        placeholder="请输入下发密码"
+        @keyup.enter="onPwdConfirm"
+      />
+      <div v-if="pwdError" class="pwd-error">{{ pwdError }}</div>
+      <template #footer>
+        <el-button size="small" @click="onPwdCancel">取消</el-button>
+        <el-button size="small" type="primary" @click="onPwdConfirm">确认下发</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 分组表单：1 排 2 列布局（10 组，每组内字段 3 列网格） -->
     <div class="groups">
       <section v-for="g in groups" :key="g.title" class="panel sec group-card">
@@ -244,6 +268,8 @@ interface FieldDef {
   /** 复合保护字段：单个寄存器 16 位，高字节=保护值档位(level)、低字节=延迟档位(delay) */
   kind?: 'scd'
   scdPart?: 'level' | 'delay'
+  /** 下发前需要输入密码校验（如检流阻值） */
+  needPassword?: boolean
 }
 
 interface FieldState extends FieldDef {
@@ -420,6 +446,34 @@ function scdPeer(f: FieldState): FieldState | undefined {
   )
 }
 
+// ====== 下发密码校验（仅检流阻值等 needPassword 字段） ======
+const PWD_FIXED = 'tyln@1688'
+const pwdDialogVisible = ref(false)
+const pwdInput = ref('')
+const pwdError = ref('')
+const pwdResolve = ref<((ok: boolean) => void) | null>(null)
+
+function confirmPassword(): Promise<boolean> {
+  pwdInput.value = ''
+  pwdError.value = ''
+  pwdDialogVisible.value = true
+  return new Promise((resolve) => { pwdResolve.value = resolve })
+}
+function onPwdConfirm() {
+  if (pwdInput.value !== PWD_FIXED) {
+    pwdError.value = '密码错误，请重试'
+    return
+  }
+  pwdDialogVisible.value = false
+  pwdResolve.value?.(true)
+  pwdResolve.value = null
+}
+function onPwdCancel() {
+  pwdDialogVisible.value = false
+  pwdResolve.value?.(false)
+  pwdResolve.value = null
+}
+
 /** ASCII 字段输入：直接存字符串并标脏 */
 function onAsciiInput(f: FieldState, v: any) {
   f.value = typeof v === 'string' ? v : ''
@@ -533,7 +587,7 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
     title: '检流电阻',
     cols: 1,
     fields: [
-      { label: '检流阻值', index: 28, unit: 'mΩ', decimals: 2, step: 0.01, note: '独立配置' },
+      { label: '检流阻值', index: 28, unit: 'mΩ', decimals: 2, step: 0.01, note: '独立配置', needPassword: true },
     ],
   },
   // 8. 温度设置（12 项 / 3 列 × 4 行）
@@ -820,6 +874,15 @@ async function writeField(f: FieldState): Promise<boolean> {
     return true
   }
   // 普通数值字段
+  // 检流阻值等需密码校验：先弹窗确认，密码不正确则中止下发
+  if (f.needPassword) {
+    const ok = await confirmPassword()
+    if (!ok) {
+      f.status = 'fail'
+      ElMessage.warning(`写参数[${f.label}]已取消：密码校验未通过`)
+      return false
+    }
+  }
   const raw = paramDisplayToRaw(f.index!, f.value)
   jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
   const resp = await jbdBus.onceResponse(1500, 0xfa)
@@ -962,6 +1025,15 @@ async function writeAll() {
       continue
     }
     // 普通数值字段
+    // 检流阻值等需密码校验：先弹窗确认，密码不正确则中止该项下发
+    if (f.needPassword) {
+      const ok = await confirmPassword()
+      if (!ok) {
+        f.status = 'fail'; fail++
+        ElMessage.warning(`写参数[${f.label}]已取消：密码校验未通过`)
+        continue
+      }
+    }
     const raw = paramDisplayToRaw(f.index!, f.value!)
     jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
