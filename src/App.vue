@@ -163,9 +163,9 @@ interface ViewDef {
 const views = markRaw<ViewDef[]>([
   { key: 'connect', title: '设备连接', hint: '配置串口参数并建立与 BMS 的通信链路', icon: Connection },
   { key: 'monitor', title: '实时监测', hint: '只读遥测：基本信息、趋势曲线、单体电压分布与内阻', icon: DataBoard },
+  { key: 'config',  title: '参数配置', hint: '读写 0xFA 保护参数寄存器（支持导入/导出）', icon: Operation },
   { key: 'control', title: '设备控制', hint: '可写操作：MOS 控制、控制指令、参数读写、密码与加热', icon: Tools },
   { key: 'macro',   title: '批量宏',   hint: '按序执行指令序列，适配产线批量操作', icon: Files },
-  { key: 'config',  title: '参数配置', hint: '读写 0xFA 保护参数寄存器（支持导入/导出）', icon: Operation },
 ])
 const active = ref('monitor')
 const activeView = computed(() => views.find((v) => v.key === active.value)!)
