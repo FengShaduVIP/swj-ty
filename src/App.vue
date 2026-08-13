@@ -149,6 +149,7 @@ import JbdMacro from './components/JbdMacro.vue'
 import JbdParamConfig from './components/JbdParamConfig.vue'
 import ConnIndicator from './components/ConnIndicator.vue'
 import { ui, setConnected, setConnecting, setDisconnected, markCommError } from './store'
+import { jbdBus } from './jbd/jbd-bus'
 import pkg from '../package.json'
 
 const version = (pkg as any).version || '1.0.0'
@@ -289,10 +290,16 @@ onMounted(() => {
   window.addEventListener('keydown', onKey)
   tickTimer = window.setInterval(tick, 1000)
   tick()
+  // 关键：把帧总线接到真实串口。否则 jbdBus.send/sendAck 发现 sender 为 null，
+  // 会立即返回超时帧，表现为「发送数据没有成功 / 读不到应答」。
+  jbdBus.setSender(handleSend)
 
   window.serialAPI?.onData?.((data: number[]) => {
-    const hex = data.map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+    const bytes = Array.from(data)
+    const hex = bytes.map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
     addLog('recv', `接收: ${hex}`)
+    // 关键：把收到的原始字节喂给 JBD 帧总线，触发切帧 → 应答配对 → handleFrame
+    jbdBus.feed(bytes)
   })
   window.serialAPI?.onError?.((error: string) => {
     addLog('error', error)
