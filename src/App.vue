@@ -100,6 +100,7 @@
           <JbdParamConfig v-show="ui.protocol === 'jbd' && active === 'config'" :connected="connected" />
           <TianyiPanel v-show="ui.protocol === 'tianyi' && active === 'monitor'" :connected="connected" />
           <TianyiParamConfig v-show="ui.protocol === 'tianyi' && active === 'config'" :connected="connected" />
+          <TianyiFirmware v-show="ui.protocol === 'tianyi' && active === 'control'" :connected="connected" />
         </section>
       </main>
     </div>
@@ -190,6 +191,7 @@ import JbdControl from './components/JbdControl.vue'
 import JbdParamConfig from './components/JbdParamConfig.vue'
 import TianyiPanel from './components/TianyiPanel.vue'
 import TianyiParamConfig from './components/TianyiParamConfig.vue'
+import TianyiFirmware from './components/TianyiFirmware.vue'
 import ConnIndicator from './components/ConnIndicator.vue'
 import { ui, setConnected, setConnecting, setDisconnected, markCommError, type ProtocolId } from './store'
 import { jbdBus } from './jbd/jbd-bus'

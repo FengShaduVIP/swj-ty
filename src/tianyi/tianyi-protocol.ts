@@ -440,3 +440,52 @@ export function formatDateTime(ym: number, dh: number, mm: number): string {
   const second = mm & 0xff
   return `20${year.toString().padStart(2, '0')}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')} ${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}:${second.toString().padStart(2, '0')}`
 }
+
+// ============================ OTA 固件升级协议 ============================
+// 采用 Modbus 0x10（写多寄存器）。源表「固件升级协议」sheet。
+// 流程：握手(0xF000) → 逐包传输(0xF001+seq, 128字节/包) → 结束跳转(0xFEAA)。
+// 注：v1 仅实现协议骨架与握手校验，实际分包烧录逻辑默认不启用（避免误烧设备）。
+export const OTA_ADDR = {
+  HANDSHAKE: 0xF000, // 写 1 寄存器：总包数
+  DATA_BASE: 0xF001, // 第 seq 包地址 = DATA_BASE + seq，每包 128 字节
+  JUMP: 0xFEAA,      // 写 1 寄存器：跳转模式
+} as const
+
+/** 跳转模式：00 01 仅升级 / 00 02 擦除保护参数和基础配置后升级 / 00 03 擦除全部区域后升级 */
+export const OTA_JUMP_MODE = {
+  UPGRADE_ONLY: 0x0001,
+  WIPE_PROTECT_CONFIG: 0x0002,
+  WIPE_ALL: 0x0003,
+} as const
+
+/** 单包字节数（128 字节 = 64 寄存器） */
+export const OTA_PACKET_BYTES = 128
+
+/** 握手帧：写 1 寄存器，值为总包数（16-bit，高字节在前） */
+export function buildOtaHandshake(slave: number, totalPackets: number): number[] {
+  const reg = ((totalPackets >> 8) & 0xff) * 0x100 + (totalPackets & 0xff)
+  return buildWriteMultipleRegisters(slave, OTA_ADDR.HANDSHAKE, [reg])
+}
+
+/** 数据包帧：写 64 寄存器（128 字节）@ 0xF001 + seq。payload 必须为 128 字节（不足需补 0） */
+export function buildOtaPacket(slave: number, seq: number, payload128: number[]): number[] {
+  const regs: number[] = []
+  for (let i = 0; i + 1 < payload128.length; i += 2) {
+    regs.push((payload128[i] << 8) | (payload128[i + 1] & 0xff))
+  }
+  return buildWriteMultipleRegisters(slave, OTA_ADDR.DATA_BASE + seq, regs)
+}
+
+/** 结束跳转帧：写 1 寄存器，值为模式（16-bit，高字节在前） */
+export function buildOtaJump(slave: number, mode: number): number[] {
+  const reg = ((mode >> 8) & 0xff) * 0x100 + (mode & 0xff)
+  return buildWriteMultipleRegisters(slave, OTA_ADDR.JUMP, [reg])
+}
+
+/** 解析 OTA 响应：约定成功为 0x10 正常帧，失败为异常帧（func|0x80，异常码 0x03） */
+export type OtaResult = 'ok' | 'fail' | 'timeout'
+export function parseOtaResponse(frame: ModbusFrame): OtaResult {
+  if (frame.timeout) return 'timeout'
+  if (frame.exception) return 'fail'
+  return 'ok'
+}
