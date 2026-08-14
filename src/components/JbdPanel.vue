@@ -196,6 +196,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import { useJbd } from '@/jbd/useJbd'
 import BatteryMeter from './BatteryMeter.vue'
 import DonutTemp from './DonutTemp.vue'
+import { PROT_QUERY_INTERVAL_MS } from '../constants'
 
 const j = useJbd()
 const {
@@ -266,7 +267,7 @@ function scheduleProtectRead() {
     protTimer = window.setInterval(() => {
       if (!connected.value) return
       readProtect()
-    }, 5000)
+    }, PROT_QUERY_INTERVAL_MS)
   }
 }
 watch(autoPollProxy, scheduleProtectRead)

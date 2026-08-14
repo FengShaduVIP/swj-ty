@@ -40,9 +40,10 @@
 </template>
 
 <script setup lang="ts">
+import { useId } from 'vue'
 defineProps<{ soc: number; status?: 'ok' | 'warning' | 'critical' }>()
-// 用随机/固定 id 区分同一页面多次引用时 SVG <defs> 重复
-const uid = Math.random().toString(36).slice(2, 8)
+// 用 Vue 内置 useId 区分同一页面多次引用时 SVG <defs> 重复（稳定唯一，避免 Math.random 重渲染导致填充闪烁）
+const uid = useId().replace(/[^a-zA-Z0-9-]/g, '')
 </script>
 
 <style scoped>

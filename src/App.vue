@@ -97,7 +97,6 @@
           />
           <JbdPanel v-show="active === 'monitor'" :connected="connected" />
           <JbdControl v-show="active === 'control'" :connected="connected" />
-          <JbdMacro v-show="active === 'macro'" :connected="connected" />
           <JbdParamConfig v-show="active === 'config'" :connected="connected" />
         </section>
       </main>
@@ -182,11 +181,10 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, markRaw } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Connection, DataBoard, Files, Setting, Fold, Expand, Operation, Tools } from '@element-plus/icons-vue'
+import { Connection, DataBoard, Setting, Fold, Expand, Operation, Tools } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
 import JbdPanel from './components/JbdPanel.vue'
 import JbdControl from './components/JbdControl.vue'
-import JbdMacro from './components/JbdMacro.vue'
 import JbdParamConfig from './components/JbdParamConfig.vue'
 import ConnIndicator from './components/ConnIndicator.vue'
 import { ui, setConnected, setConnecting, setDisconnected, markCommError } from './store'
@@ -194,6 +192,7 @@ import { jbdBus } from './jbd/jbd-bus'
 import { describeFrame } from './jbd/jbd-protocol'
 import { useJbd } from './jbd/useJbd'
 import pkg from '../package.json'
+import { LOG_MAX_LINES } from './constants'
 
 const version = (pkg as any).version || '1.0.0'
 
@@ -209,7 +208,6 @@ const views = markRaw<ViewDef[]>([
   { key: 'monitor', title: '实时监测', hint: '只读遥测：基本信息、趋势曲线、单体电压分布与内阻', icon: DataBoard },
   { key: 'config',  title: '参数配置', hint: '读写 0xFA 保护参数寄存器（支持导入/导出）', icon: Operation },
   { key: 'control', title: '设备控制', hint: '可写操作：MOS 控制、控制指令、参数读写、密码与加热', icon: Tools },
-  { key: 'macro',   title: '批量宏',   hint: '按序执行指令序列，适配产线批量操作', icon: Files },
 ])
 const active = ref('monitor')
 const activeView = computed(() => views.find((v) => v.key === active.value)!)
@@ -241,7 +239,7 @@ function addLog(type: LogEntry['type'], content: string) {
   const time = now.toLocaleTimeString('zh-CN', { hour12: false }) +
     '.' + now.getMilliseconds().toString().padStart(3, '0')
   dataLogs.value.push({ time, type, content })
-  if (dataLogs.value.length > 500) dataLogs.value = dataLogs.value.slice(-500)
+  if (dataLogs.value.length > LOG_MAX_LINES) dataLogs.value = dataLogs.value.slice(-LOG_MAX_LINES)
 }
 
 // ===== 串口连接 =====

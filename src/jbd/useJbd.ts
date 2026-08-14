@@ -14,6 +14,7 @@ import {
 import { jbdBus } from '@/jbd/jbd-bus'
 import { PARAM_TABLE, paramFormat, paramDispUnit, CHIP_TYPES } from '@/jbd/jbd-params'
 import { ui, pushSample } from '@/store'
+import { POLL_INTERVAL_MS } from '@/constants'
 
 // ============================================================
 // 模块级单例状态：实时监测页与设备控制页共享同一份数据与串口会话
@@ -177,7 +178,7 @@ function startPoll() {
   if (connected.value && autoPollProxy.value && !pollSuspended.value) {
     pollTimer = window.setInterval(() => {
       pollSend(buildReadBasicInfo()); pollSend(buildReadCellVoltages())
-    }, 2000)
+    }, POLL_INTERVAL_MS)
   }
 }
 // 方案2：参数读取/下发期间临时挂起自动轮询，避免轮询帧插入参数操作序列

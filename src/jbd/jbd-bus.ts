@@ -14,6 +14,7 @@
  */
 import { JbdSession } from './jbd-session'
 import type { Frame } from './jbd-protocol'
+import { FRAME_TIMEOUT_MS } from '../constants'
 
 type FrameListener = (frame: Frame) => void
 type TimeoutFrame = Frame & { timeout: true }
@@ -25,7 +26,7 @@ const TIMEOUT_FRAME = (): TimeoutFrame => ({
 /** 发送队列深度上限：超出则丢弃新帧（避免断线/无应答时队列无限堆积） */
 const QUEUE_CAP = 32
 /** 单帧等待应答的默认超时（ms） */
-const DEFAULT_ACK_TIMEOUT = 1500
+// 单帧请求-响应超时统一使用 constants.FRAME_TIMEOUT_MS
 
 interface QueueJob {
   frame: number[]
@@ -84,7 +85,7 @@ class JbdBus {
   }
 
   // ===== 串行队列实现 =====
-  private enqueue(frame: number[], expectedCmd: number, timeoutMs = DEFAULT_ACK_TIMEOUT): Promise<Frame> {
+  private enqueue(frame: number[], expectedCmd: number, timeoutMs = FRAME_TIMEOUT_MS): Promise<Frame> {
     return new Promise((resolve) => {
       if (this.outQueue.length >= QUEUE_CAP) {
         console.warn('[jbdBus] 发送队列已满，丢弃帧:', frame)
@@ -135,7 +136,7 @@ class JbdBus {
   }
 
   /** 发送并等待应答（用于需要确认结果的指令，如参数读取/下发），返回响应帧或超时帧 */
-  sendAck(frame: number[], timeoutMs = DEFAULT_ACK_TIMEOUT): Promise<Frame> {
+  sendAck(frame: number[], timeoutMs = FRAME_TIMEOUT_MS): Promise<Frame> {
     const expectedCmd = frame[2] & 0xff
     return this.enqueue(frame, expectedCmd, timeoutMs)
   }
@@ -148,7 +149,7 @@ class JbdBus {
 
   /** 等待下一帧（用于请求-响应配对 / 宏顺序执行）。超时返回 timeout:true 帧。
    * 传入 expectedCmd 时只响应该命令码的帧，避免多组件并发等待时互相抢响应。 */
-  onceResponse(timeoutMs = 1500, expectedCmd?: number): Promise<Frame> {
+  onceResponse(timeoutMs = FRAME_TIMEOUT_MS, expectedCmd?: number): Promise<Frame> {
     return new Promise((resolve) => {
       let timer: ReturnType<typeof setTimeout> | null = null
       const wrapped = (f: Frame) => {

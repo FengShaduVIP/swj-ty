@@ -126,9 +126,16 @@
 
     <!-- 分组表单：左右两列容器布局（每组内字段 3 列网格）；
          拖动模式下卡片可「列内重排」并支持「跨列移动」，顺序持久化到 localStorage -->
+    <div class="pc-toolbar">
+      <el-input v-model="searchText" size="small" clearable placeholder="搜索参数名称…" style="width: 260px">
+        <template #prefix><el-icon><Search /></el-icon></template>
+      </el-input>
+      <el-button size="small" @click="toggleCollapseAll">{{ allCollapsed ? '展开全部' : '折叠全部' }}</el-button>
+      <span class="pc-count" v-if="searchText">匹配 {{ matchCount }} 项</span>
+    </div>
     <div class="groups" :class="{ dragging: dragMode }">
       <div
-        v-for="(colArr, ci) in columns"
+        v-for="(colArr, ci) in displayColumns"
         :key="ci"
         class="group-col"
         :class="{ 'col-dragging': dragMode }"
@@ -149,9 +156,12 @@
         <header class="sec-h">
           <el-icon v-if="dragMode" class="drag-handle"><Rank /></el-icon>
           <span class="group-title">{{ g.title }}</span>
+          <el-button size="small" text class="collapse-btn" @click="toggleCollapse(g.title)">
+            <el-icon><component :is="isCollapsed(g.title) ? ArrowRight : ArrowDown" /></el-icon>
+          </el-button>
           <el-button size="small" text :disabled="!connected" style="margin-left:auto" @click="readGroup(g)"><el-icon><Refresh /></el-icon> 读本组</el-button>
         </header>
-        <div class="sec-b">
+        <div class="sec-b" v-if="!isCollapsed(g.title) || !!searchText.trim()">
           <div class="field-grid" :style="{ gridTemplateColumns: `repeat(${g.cols ?? 3}, 1fr)` }">
             <div
               v-for="f in g.fields"
@@ -274,6 +284,7 @@
             </el-button>
           </div>
         </div>
+        <div v-else class="sec-collapsed">已折叠 · {{ g.fields.length }} 项</div>
       </section>
       </div>
     </div>
@@ -281,9 +292,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Setting, Refresh, Upload, FolderOpened, Download, Files, Promotion, Rank, Operation, RefreshLeft, Delete, Edit } from '@element-plus/icons-vue'
+import { Setting, Refresh, Upload, FolderOpened, Download, Files, Promotion, Rank, Operation, RefreshLeft, Delete, Edit, Search, ArrowDown, ArrowRight } from '@element-plus/icons-vue'
 import { jbdBus } from '@/jbd/jbd-bus'
 import {
   buildReadParam, buildWriteParam, buildSetBtName,
@@ -859,6 +870,32 @@ const columns = ref<GroupObj[][]>(buildColumnsFromTitles(defaultColumnOrder))
 const groups = computed(() => columns.value.flat())
 const allFields = computed(() => groups.value.flatMap((g) => g.fields))
 const dirtyCount = computed(() => allFields.value.filter((f) => f.dirty).length)
+
+// ===== 参数搜索与分组折叠 =====
+const searchText = ref('')
+const collapsed = reactive<Record<string, boolean>>({})
+function isCollapsed(t: string) { return !!collapsed[t] }
+function toggleCollapse(t: string) { collapsed[t] = !collapsed[t] }
+const allCollapsed = computed(() => columns.value.every((col) => col.every((g) => collapsed[g.title])))
+function toggleCollapseAll() {
+  const next = !allCollapsed.value
+  for (const col of columns.value) for (const g of col) collapsed[g.title] = next
+}
+const matchCount = computed(() => {
+  const q = searchText.value.trim().toLowerCase()
+  if (!q) return 0
+  return allFields.value.filter((f) => (f.label || '').toLowerCase().includes(q)).length
+})
+// 搜索时按名称过滤字段并隐藏空分组；未搜索时原样返回（折叠由模板 v-if 处理）
+const displayColumns = computed(() => {
+  const q = searchText.value.trim().toLowerCase()
+  if (!q) return columns.value
+  return columns.value.map((col) =>
+    col
+      .map((g) => ({ ...g, fields: g.fields.filter((f) => (f.label || '').toLowerCase().includes(q)) }))
+      .filter((g) => g.fields.length > 0)
+  )
+})
 
 // ====== 分组拖动排序（点击「拖动排序」进入拖动模式；左右两列各自可拖拽重排，也支持跨列移动；顺序持久化到 localStorage） ======
 const DRAG_ORDER_KEY = 'jbd-param-group-order'
@@ -1913,4 +1950,16 @@ function exportConfig() {
 }
 .tpl-meta { font-size: var(--fs-caption); color: var(--text-tertiary); margin-top: 2px; }
 .tpl-actions { display: flex; align-items: center; gap: var(--space-1); flex-shrink: 0; }
+/* ===== 参数搜索工具栏 & 分组折叠 ===== */
+.pc-toolbar { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); flex-wrap: wrap; }
+.pc-count { font-size: var(--fs-caption); color: var(--text-tertiary); }
+.collapse-btn { margin-left: var(--space-1); padding: 2px 6px; color: var(--text-secondary); }
+.collapse-btn:hover { color: var(--info); }
+.sec-collapsed {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-caption);
+  color: var(--text-tertiary);
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+}
 </style>

@@ -93,8 +93,8 @@
         <div class="pwd-block">
           <div class="pwd-title">蓝牙密码</div>
           <div class="param-row">
-            <el-input v-model="btOld" size="small" placeholder="原密码6位" style="width: 140px" />
-            <el-input v-model="btNew" size="small" placeholder="新密码6位" style="width: 140px" />
+            <el-input v-model="btOld" size="small" type="password" show-password placeholder="原密码6位" style="width: 140px" />
+            <el-input v-model="btNew" size="small" type="password" show-password placeholder="新密码6位" style="width: 140px" />
           </div>
           <div class="param-row">
             <el-button size="small" :disabled="!connected || !btNew" @click="btPair">配对(设密码)</el-button>
