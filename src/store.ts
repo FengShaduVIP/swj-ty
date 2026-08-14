@@ -6,6 +6,7 @@
 import { reactive } from 'vue'
 
 export type ConnState = 'disconnected' | 'connecting' | 'connected' | 'error'
+export type ProtocolId = 'jbd' | 'tianyi'
 
 export interface LiveSample {
   totalVoltage_V: number | null
@@ -20,6 +21,10 @@ export const ui = reactive({
   conn: 'disconnected' as ConnState,
   portPath: '',
   baudRate: 0,
+  /** 当前选中的通讯协议 */
+  protocol: 'jbd' as ProtocolId,
+  /** Modbus 从机地址（仅天一协议使用） */
+  slaveAddr: 1,
   /** 通信超时/错误最近发生时间戳（用于状态栏异常判断） */
   lastCommErrorAt: 0,
   /** 累计采样次数 */
@@ -52,6 +57,14 @@ export function setDisconnected() {
   ui.portPath = ''
   ui.baudRate = 0
   ui.live = { totalVoltage_V: null, current_A: null, soc: null, maxTemp_C: null, cellCount: null }
+}
+
+export function setProtocol(protocol: ProtocolId) {
+  ui.protocol = protocol
+}
+
+export function setSlaveAddr(addr: number) {
+  ui.slaveAddr = Math.max(1, Math.min(247, addr))
 }
 
 export function markCommError() {
