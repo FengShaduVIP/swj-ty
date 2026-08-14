@@ -128,31 +128,46 @@
       </div>
     </div>
 
-    <!-- 第三行：开关状态 -->
+    <!-- 第三行：开关与状态 -->
     <div class="card switch-card">
       <div class="card-h">
-        <span class="card-title">开关状态</span>
-        <span class="card-hint">充电 / 放电 / 加热 / 蜂鸣器（来自 Status1 回路使能位）</span>
+        <span class="card-title">开关与状态 (Status1)</span>
+        <span class="card-hint">充电/放电/加热回路使能 + 低电量 + 失效标志</span>
       </div>
       <div class="switch-row">
         <div class="switch-item" :class="{ on: statusFlags.chargeSwitch }">
-          <span class="switch-label">充电开关</span>
+          <span class="switch-label">充电回路</span>
           <span class="switch-state">{{ statusFlags.chargeSwitch ? '开' : '关' }}</span>
           <span class="switch-dot"></span>
         </div>
         <div class="switch-item" :class="{ on: statusFlags.dischargeSwitch }">
-          <span class="switch-label">放电开关</span>
+          <span class="switch-label">放电</span>
           <span class="switch-state">{{ statusFlags.dischargeSwitch ? '开' : '关' }}</span>
           <span class="switch-dot"></span>
         </div>
         <div class="switch-item" :class="{ on: statusFlags.heatSwitch }">
-          <span class="switch-label">加热开关</span>
+          <span class="switch-label">加热</span>
           <span class="switch-state">{{ statusFlags.heatSwitch ? '开' : '关' }}</span>
           <span class="switch-dot"></span>
         </div>
-        <div class="switch-item" :class="{ on: beeperOn }" title="蜂鸣器状态需从配置页读取">
-          <span class="switch-label">蜂鸣器开关</span>
-          <span class="switch-state">{{ beeperOn ? '开' : '关' }}</span>
+        <div class="switch-item flag" :class="{ active: statusFlags.lowPower }">
+          <span class="switch-label">低电量</span>
+          <span class="switch-state">{{ statusFlags.lowPower ? '是' : '否' }}</span>
+          <span class="switch-dot"></span>
+        </div>
+        <div class="switch-item fail" :class="{ active: statusFlags.chargeFail }">
+          <span class="switch-label">充电失效</span>
+          <span class="switch-state">{{ statusFlags.chargeFail ? '失效' : '正常' }}</span>
+          <span class="switch-dot"></span>
+        </div>
+        <div class="switch-item fail" :class="{ active: statusFlags.dischargeFail }">
+          <span class="switch-label">放电失效</span>
+          <span class="switch-state">{{ statusFlags.dischargeFail ? '失效' : '正常' }}</span>
+          <span class="switch-dot"></span>
+        </div>
+        <div class="switch-item fail" :class="{ active: statusFlags.heatFail }">
+          <span class="switch-label">加热失效</span>
+          <span class="switch-state">{{ statusFlags.heatFail ? '失效' : '正常' }}</span>
           <span class="switch-dot"></span>
         </div>
       </div>
@@ -251,8 +266,6 @@ const vMinIdx = computed(() => {
   if (!cellVoltages.value.length) return -1
   return cellVoltages.value.indexOf(cellMin.value)
 })
-
-const beeperOn = computed(() => false) // 蜂鸣器状态在 Status1 中无对应位，需后续配置页读取
 
 function isProtectActive(bit: number): boolean {
   return activeProtects.value.some((p) => p.bit === bit)
@@ -639,6 +652,32 @@ const sparkPower = computed(() => makeSpark(history.value, 'power'))
 .switch-item.on .switch-dot {
   background: var(--ok);
   box-shadow: 0 0 8px var(--ok);
+}
+/* 低电量：置 1 = 低电量，琥珀提示 */
+.switch-item.flag.active {
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
+.switch-item.flag.active .switch-state {
+  color: var(--warning);
+  font-weight: var(--fw-semibold);
+}
+.switch-item.flag.active .switch-dot {
+  background: var(--warning);
+  box-shadow: 0 0 8px var(--warning);
+}
+/* 失效标志：置 1 = 故障，红色警示 */
+.switch-item.fail.active {
+  background: var(--critical-bg);
+  border-color: var(--critical-border);
+}
+.switch-item.fail.active .switch-state {
+  color: var(--critical);
+  font-weight: var(--fw-semibold);
+}
+.switch-item.fail.active .switch-dot {
+  background: var(--critical);
+  box-shadow: 0 0 8px var(--critical);
 }
 
 /* 保护与告警 */
