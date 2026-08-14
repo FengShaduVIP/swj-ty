@@ -27,6 +27,7 @@ export interface TianyiParamDef {
   min?: number
   max?: number
   decimals?: number
+  step?: number
   rw: boolean
   options?: EnumOption[]
   group: TianyiGroup

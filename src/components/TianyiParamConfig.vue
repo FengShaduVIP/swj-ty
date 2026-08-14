@@ -37,41 +37,36 @@
 
     <div class="tpc-body">
       <!-- 控制页（写专用） -->
-      <div v-if="activeTab === 'control'" class="ctrl-grid">
-        <div v-for="def in paramsOf('control')" :key="def.reg" class="ctrl-card">
-          <div class="ctrl-name">{{ def.label }}</div>
-          <div class="ctrl-reg num">0x{{ def.reg.toString(16).toUpperCase() }}</div>
-          <div class="ctrl-hint">{{ def.hint }}</div>
-          <button class="btn btn-danger" :disabled="!connected || writing" @click="writeControl(def)">执行（写 0x0001）</button>
+      <div v-if="activeTab === 'control'" class="field-grid" style="--cols: 6">
+        <div v-for="def in paramsOf('control')" :key="def.reg" class="field">
+          <div class="field-label">
+            <span class="field-label-text" :title="def.hint">{{ def.label }}</span>
+          </div>
+          <div class="field-row">
+            <el-input :model-value="'—'" readonly size="small" style="flex: 1" />
+            <el-button size="small" type="danger" :loading="statusMap[def.reg] === 'writing'" :disabled="!connected || writing" @click="writeControl(def)">执行</el-button>
+          </div>
         </div>
       </div>
 
-      <!-- 参数表 -->
-      <div v-else class="param-table">
-        <div class="pt-head">
-          <span class="c-name">参数</span>
-          <span class="c-var">变量</span>
-          <span class="c-cur">当前值</span>
-          <span class="c-edit">修改值</span>
-          <span class="c-unit">单位</span>
-          <span class="c-range">范围 / 说明</span>
-          <span class="c-op">操作</span>
-        </div>
+      <!-- 参数卡片网格：每行 6 列 -->
+      <div v-else class="field-grid" style="--cols: 6">
         <div
           v-for="def in paramsOf(activeTab)"
           :key="def.reg"
-          class="pt-row"
-          :class="{ dirty: isDirty(def) }"
+          class="field"
+          :class="{ 'field--dirty': isDirty(def), ok: statusMap[def.reg] === 'ok', fail: statusMap[def.reg] === 'fail' }"
         >
-          <span class="c-name">{{ def.label }}</span>
-          <span class="c-var num">{{ def.name }}</span>
-          <span class="c-cur num">{{ curDisplay(def) }}</span>
-          <span class="c-edit">
+          <div class="field-label">
+            <span class="field-label-text" :title="def.hint">{{ def.label }}</span>
+          </div>
+          <div class="field-row">
             <el-select
               v-if="def.options"
-              v-model="editMap[def.reg]"
+              :model-value="editMap[def.reg] ?? ''"
               size="small"
-              class="cell-select"
+              style="flex: 1"
+              @update:model-value="(v: any) => { editMap[def.reg] = String(v); statusMap[def.reg] = '' }"
             >
               <el-option
                 v-for="o in def.options"
@@ -80,20 +75,28 @@
                 :value="String(o.value)"
               />
             </el-select>
-            <input
+            <el-input
               v-else
-              class="cell-input num"
-              v-model="editMap[def.reg]"
-              :placeholder="curDisplay(def)"
-            />
-          </span>
-          <span class="c-unit">{{ def.unit || '' }}</span>
-          <span class="c-range">
-            {{ rangeText(def) }}<span v-if="def.hint" class="ph"> · {{ def.hint }}</span>
-          </span>
-          <span class="c-op">
-            <button class="btn btn-sm" :disabled="!isDirty(def) || writing || !connected" @click="writeOne(def)">写入</button>
-          </span>
+              :model-value="editMap[def.reg] ?? ''"
+              type="number"
+              size="small"
+              style="flex: 1"
+              :step="def.step ?? Math.pow(10, -(def.decimals ?? 0))"
+              :min="def.min"
+              :max="def.max"
+              placeholder="—"
+              @update:model-value="(v: any) => { editMap[def.reg] = String(v); statusMap[def.reg] = '' }"
+            >
+              <template v-if="def.unit" #suffix>{{ def.unit }}</template>
+            </el-input>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="statusMap[def.reg] === 'writing'"
+              :disabled="!isDirty(def) || !connected || writing"
+              @click="writeOne(def)"
+            >下发</el-button>
+          </div>
         </div>
       </div>
     </div>
@@ -143,6 +146,7 @@ const slaveHex = computed(() => slave.value.toString(16).padStart(2, '0').toUppe
 const activeTab = ref<TianyiGroup>('config')
 const rawMap = reactive<Record<number, number>>({})
 const editMap = reactive<Record<number, string>>({})
+const statusMap = reactive<Record<number, 'ok' | 'fail' | 'writing' | ''>>({})
 const reading = ref(false)
 const writing = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -156,7 +160,6 @@ function isDirty(def: TianyiParamDef): boolean {
   const edited = editMap[def.reg]
   if (edited === undefined || edited === '') return false
   const raw = rawMap[def.reg]
-  // 未读取（离线）但已填写 → 视为待写
   if (raw === undefined) return true
   return edited !== formatDisplay(def, raw)
 }
@@ -165,16 +168,10 @@ function dirtyCount(group: TianyiGroup): number {
   return paramsOf(group).filter((d) => isDirty(d)).length
 }
 
-function rangeText(def: TianyiParamDef): string {
-  if (def.options) return '枚举'
-  if (def.min !== undefined && def.max !== undefined) return `${def.min}–${def.max}`
-  return '0–65535'
-}
-
 // ===== 读取整组 =====
 async function loadGroup(group: TianyiGroup) {
   if (!props.connected) { ElMessage.warning('请先连接串口'); return }
-  if (group === 'control') return // 控制区只读专用，无需读取
+  if (group === 'control') return
   const range = GROUP_READ[group]
   if (!range) return
   reading.value = true
@@ -193,6 +190,7 @@ async function loadGroup(group: TianyiGroup) {
       const raw = readU16(frame.data, byteOff)
       rawMap[def.reg] = raw
       editMap[def.reg] = formatDisplay(def, raw)
+      statusMap[def.reg] = ''
     }
     ElMessage.success(`已读取 ${group} 区 ${defs.length} 项`)
   } catch (e: any) {
@@ -205,46 +203,46 @@ async function loadGroup(group: TianyiGroup) {
 // ===== 单条写入 =====
 async function writeOne(def: TianyiParamDef) {
   if (!props.connected) { ElMessage.warning('请先连接串口'); return }
-  const key = def.reg
-  const raw = rawMap[key]
-  if (raw === undefined) { ElMessage.warning('请先读取当前值'); return }
 
   let value: number
   if (def.options) {
-    value = parseInt(editMap[key], 10)
+    value = parseInt(editMap[def.reg], 10)
     if (!Number.isFinite(value)) { ElMessage.error(`${def.label}：取值无效`); return }
   } else {
-    const v = parseFloat(editMap[key])
+    const v = parseFloat(editMap[def.reg])
     if (!Number.isFinite(v)) { ElMessage.error(`${def.label}：请输入有效数字`); return }
     if (def.min !== undefined && v < def.min) { ElMessage.error(`${def.label}：低于最小值 ${def.min}`); return }
     if (def.max !== undefined && v > def.max) { ElMessage.error(`${def.label}：超出最大值 ${def.max}`); return }
     value = displayToRaw(def, v)
   }
 
-  // 保护 / 校准为高风险区，写前二次确认
   if (def.group === 'protect' || def.group === 'calib') {
     try {
       await ElMessageBox.confirm(
-        `确认将「${def.label}」(${def.name}) 写入为 ${def.options ? editMap[key] : editMap[key] + (def.unit ? ' ' + def.unit : '')}？`,
+        `确认将「${def.label}」写入为 ${def.options ? editMap[def.reg] : editMap[def.reg] + (def.unit ? ' ' + def.unit : '')}？`,
         '写参数确认',
         { type: 'warning', confirmButtonText: '确认写入', cancelButtonText: '取消' },
       )
     } catch {
-      return // 用户取消
+      return
     }
   }
 
+  statusMap[def.reg] = 'writing'
   writing.value = true
   try {
     const frame = await tianyiBus.sendAck(buildWriteSingleRegister(slave.value, def.reg, value))
     if (frame.timeout || frame.exception) {
+      statusMap[def.reg] = 'fail'
       ElMessage.error(`写入失败：${frame.timeout ? '超时无响应' : '设备异常应答 0x' + (frame.exceptionCode ?? 0).toString(16)}`)
       return
     }
-    rawMap[key] = value
-    editMap[key] = formatDisplay(def, value)
+    rawMap[def.reg] = value
+    editMap[def.reg] = formatDisplay(def, value)
+    statusMap[def.reg] = 'ok'
     ElMessage.success(`已写入 ${def.label}`)
   } catch (e: any) {
+    statusMap[def.reg] = 'fail'
     ElMessage.error('写入异常：' + (e?.message || e))
   } finally {
     writing.value = false
@@ -271,13 +269,16 @@ async function writeAll() {
       }
       value = displayToRaw(def, v)
     }
+    statusMap[key] = 'writing'
     try {
       const frame = await tianyiBus.sendAck(buildWriteSingleRegister(slave.value, def.reg, value))
-      if (frame.timeout || frame.exception) { fail++; continue }
+      if (frame.timeout || frame.exception) { statusMap[key] = 'fail'; fail++; continue }
       rawMap[key] = value
       editMap[key] = formatDisplay(def, value)
+      statusMap[key] = 'ok'
       ok++
     } catch {
+      statusMap[key] = 'fail'
       fail++
     }
   }
@@ -298,15 +299,19 @@ async function writeControl(def: TianyiParamDef) {
   } catch {
     return
   }
+  statusMap[def.reg] = 'writing'
   writing.value = true
   try {
     const frame = await tianyiBus.sendAck(buildWriteSingleRegister(slave.value, def.reg, 0x0001))
     if (frame.timeout || frame.exception) {
+      statusMap[def.reg] = 'fail'
       ElMessage.error(`执行失败：${frame.timeout ? '超时无响应' : '设备异常应答'}`)
       return
     }
+    statusMap[def.reg] = 'ok'
     ElMessage.success(`已执行 ${def.label}`)
   } catch (e: any) {
+    statusMap[def.reg] = 'fail'
     ElMessage.error('执行异常：' + (e?.message || e))
   } finally {
     writing.value = false
@@ -331,7 +336,7 @@ function buildExportData() {
       display = rawToDisplay(def, raw)
       rawVal = raw
     } else {
-      continue // 既无编辑也无读取，跳过
+      continue
     }
     params.push({
       reg: def.reg,
@@ -400,12 +405,12 @@ function applyImport(data: any) {
     if (item?.raw !== undefined && Number.isFinite(Number(item.raw))) rawVal = Number(item.raw) & 0xffff
     else if (item?.value !== undefined && Number.isFinite(Number(item.value))) rawVal = displayToRaw(def, Number(item.value))
     else continue
-    // 仅回填修改值列，不写 rawMap，使离线导入项标记为待写（dirty）
     editMap[reg] = formatDisplay(def, rawVal)
+    statusMap[reg] = ''
     n++
   }
   if (!n) { ElMessage.error('未找到有效参数（请检查文件内容）'); return }
-  ElMessage.success(`已导入 ${n} 个参数（已在修改值列标红，连接后可下发）`)
+  ElMessage.success(`已导入 ${n} 个参数（已在卡片标红，连接后可下发）`)
 }
 
 // ===== 本地模板（localStorage，参照 JBD 参数配置页范式）=====
@@ -531,42 +536,39 @@ watch(() => props.connected, (c) => { if (c) loadGroup(activeTab.value) })
 
 .tpc-body { flex: 1; min-height: 0; }
 
-/* 参数表 */
-.param-table { display: flex; flex-direction: column; border: 1px solid var(--border-default); border-radius: var(--radius-md); overflow: hidden; }
-.pt-head, .pt-row {
+/* 与 JBD 参数配置页对齐的卡片网格 */
+.field-grid {
   display: grid;
-  grid-template-columns: 1.4fr 1.4fr 1fr 1.3fr 0.7fr 2.2fr 0.9fr;
-  align-items: center; gap: var(--space-3);
+  grid-template-columns: repeat(var(--cols, 6), minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.field {
+  position: relative;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
   padding: var(--space-3) var(--space-4);
+  min-width: 0;
 }
-.pt-head { background: var(--bg-base); border-bottom: 1px solid var(--border-default); font-size: var(--fs-caption); color: var(--text-tertiary); font-weight: var(--fw-semibold); }
-.pt-row { border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); }
-.pt-row:last-child { border-bottom: none; }
-.pt-row.dirty { background: var(--warning-bg); }
-.c-name { font-size: var(--fs-body-sm); color: var(--text-primary); font-weight: var(--fw-medium); }
-.c-var { font-size: var(--fs-caption); color: var(--text-tertiary); }
-.c-cur { font-size: var(--fs-body-sm); color: var(--text-primary); }
-.c-unit { font-size: var(--fs-caption); color: var(--text-tertiary); }
-.c-range { font-size: var(--fs-caption); color: var(--text-secondary); }
-.c-range .ph { color: var(--warning); }
-.cell-input {
-  width: 100%; height: 28px; padding: 0 var(--space-3);
-  background: var(--bg-canvas); border: 1px solid var(--border-default); border-radius: var(--radius-sm);
-  color: var(--text-primary); font-family: var(--font-mono); font-size: var(--fs-body-sm);
+.field.ok { box-shadow: inset 2px 0 0 var(--ok); }
+.field.fail { box-shadow: inset 2px 0 0 var(--critical); }
+.field--dirty { box-shadow: inset 2px 0 0 var(--warning); }
+.field--dirty::after {
+  content: ''; position: absolute; top: 6px; right: 6px;
+  width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--warning);
 }
-.cell-input:focus { outline: none; border-color: var(--brand); }
-.cell-select { width: 100%; }
-.c-op { display: flex; justify-content: flex-end; }
-
-/* 控制页 */
-.ctrl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-5); }
-.ctrl-card {
-  display: flex; flex-direction: column; gap: var(--space-3);
-  padding: var(--space-5); background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md);
+.field-label {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-size: var(--fs-caption); color: var(--text-secondary);
+  margin-bottom: var(--space-3); min-height: 18px;
 }
-.ctrl-name { font-size: var(--fs-body); font-weight: var(--fw-semibold); color: var(--text-primary); }
-.ctrl-reg { font-size: var(--fs-caption); color: var(--text-tertiary); }
-.ctrl-hint { font-size: var(--fs-caption); color: var(--warning); flex: 1; }
+.field-label-text {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.field-row {
+  display: flex; align-items: center; gap: var(--space-2);
+  min-width: 0;
+}
 
 /* 模板对话框 */
 .tip { font-size: var(--fs-caption); color: var(--text-secondary); margin-bottom: var(--space-4); }
@@ -594,7 +596,5 @@ watch(() => props.connected, (c) => { if (c) loadGroup(activeTab.value) })
 .btn-primary { background: var(--brand-bg-subtle); border-color: var(--brand); color: var(--brand-text); font-weight: var(--fw-semibold); }
 .btn-primary:hover:not(:disabled) { background: var(--brand-bg); }
 .btn-sm { height: 26px; padding: 0 var(--space-3); }
-.btn-danger { background: var(--critical-bg); border-color: var(--critical-border); color: var(--critical); font-weight: var(--fw-semibold); }
-.btn-danger:hover:not(:disabled) { background: var(--critical-bg); filter: brightness(1.15); }
 .btn-ghost { background: transparent; border-color: var(--border-default); color: var(--text-tertiary); }
 </style>
