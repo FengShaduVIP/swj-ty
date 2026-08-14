@@ -1,6 +1,6 @@
-appId: com.serial.modbus-tool
-productName: 串口Modbus调试工具
-copyright: Copyright © 2024
+appId: com.tianyi.bms
+productName: 天一BMS
+copyright: Copyright © 2026 天一锂能新能源
 
 # 关闭 electron-builder 的原生模块重编译：serialport/bindings-cpp 已通过
 # pnpm install 阶段用预编译 N-API 二进制装好（ABI 稳定，Node/Electron 通用），

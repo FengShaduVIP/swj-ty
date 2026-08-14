@@ -8,16 +8,13 @@
           <StatusBadge :status="inFactory ? 'brand' : 'neutral'" :label="inFactory ? '工厂模式' : '普通模式'" />
           <el-button size="small" :disabled="!connected" :loading="busy" @click="readAll"><el-icon><Refresh /></el-icon> 读取全部</el-button>
           <el-button size="small" type="primary" :disabled="!connected || !dirtyCount" :loading="busy" @click="writeAll"><el-icon><Upload /></el-icon> 全部写入({{ dirtyCount }})</el-button>
-          <el-upload
-            :auto-upload="false"
-            :show-file-list="false"
-            accept=".json,application/json"
-            :on-change="onFileChange"
-            style="display: inline-flex"
-          >
-            <el-button size="small"><el-icon><FolderOpened /></el-icon> 导入配置</el-button>
-          </el-upload>
+          <el-button size="small" @click="openTemplateDialog"><el-icon><FolderOpened /></el-icon> 导入配置</el-button>
+          <el-button size="small" @click="saveAsTemplate"><el-icon><Files /></el-icon> 存为模板</el-button>
           <el-button size="small" @click="exportConfig"><el-icon><Download /></el-icon> 导出配置</el-button>
+          <el-button size="small" :type="dragMode ? 'warning' : 'default'" @click="dragMode = !dragMode">
+            <el-icon><Operation /></el-icon> {{ dragMode ? '完成排序' : '拖动排序' }}
+          </el-button>
+          <el-button size="small" @click="resetToDefault"><el-icon><RefreshLeft /></el-icon> 恢复默认顺序</el-button>
         </div>
       </header>
     </section>
@@ -65,6 +62,44 @@
       </template>
     </el-dialog>
 
+    <!-- 导入配置模板列表（弹窗） -->
+    <el-dialog
+      v-model="templateDialogVisible"
+      title="导入配置模板"
+      width="640px"
+      :close-on-click-modal="false"
+    >
+      <div class="tip">选择本地已保存的配置模板可直接导入，无需再次选择文件；也可从文件导入，或先「存为模板」保存当前配置。</div>
+      <div class="tpl-toolbar">
+        <el-upload
+          :auto-upload="false"
+          :show-file-list="false"
+          accept=".json,application/json"
+          :on-change="onFileChangeFromDialog"
+          style="display: inline-flex"
+        >
+          <el-button size="small"><el-icon><FolderOpened /></el-icon> 从文件导入</el-button>
+        </el-upload>
+        <span class="tpl-count">共 {{ templates.length }} 个模板</span>
+      </div>
+      <div class="tpl-list">
+        <div v-if="!templates.length" class="tpl-empty">
+          暂无模板，点击「从文件导入」或先「存为模板」保存当前配置。
+        </div>
+        <div v-for="t in templates" :key="t.id" class="tpl-item">
+          <div class="tpl-main">
+            <div class="tpl-name">{{ t.name }}</div>
+            <div class="tpl-meta">{{ formatDate(t.updatedAt) }} · {{ (t.data?.params?.length) || 0 }} 个参数</div>
+          </div>
+          <div class="tpl-actions">
+            <el-button size="small" type="primary" @click="importFromTemplate(t)">导入</el-button>
+            <el-button size="small" text @click="renameTemplate(t)"><el-icon><Edit /></el-icon> 重命名</el-button>
+            <el-button size="small" text @click="deleteTemplate(t)"><el-icon><Delete /></el-icon></el-button>
+          </div>
+        </div>
+      </div>
+    </el-dialog>
+
     <!-- 下发密码校验弹窗（仅检流阻值等 needPassword 字段） -->
     <el-dialog
       v-model="pwdDialogVisible"
@@ -89,10 +124,30 @@
       </template>
     </el-dialog>
 
-    <!-- 分组表单：1 排 2 列布局（10 组，每组内字段 3 列网格） -->
-    <div class="groups">
-      <section v-for="g in groups" :key="g.title" class="panel sec group-card">
+    <!-- 分组表单：左右两列容器布局（每组内字段 3 列网格）；
+         拖动模式下卡片可「列内重排」并支持「跨列移动」，顺序持久化到 localStorage -->
+    <div class="groups" :class="{ dragging: dragMode }">
+      <div
+        v-for="(colArr, ci) in columns"
+        :key="ci"
+        class="group-col"
+        :class="{ 'col-dragging': dragMode }"
+        @dragover.prevent
+        @drop="onDropColumn(ci)"
+      >
+      <section
+        v-for="g in colArr"
+        :key="g.title"
+        class="panel sec group-card"
+        :class="{ 'is-dragging': dragMode }"
+        :draggable="dragMode"
+        @dragstart="onDragStart(g)"
+        @dragover.prevent
+        @drop.stop="onDropGroup(g.title, ci)"
+        @dragend="onDragEnd"
+      >
         <header class="sec-h">
+          <el-icon v-if="dragMode" class="drag-handle"><Rank /></el-icon>
           <span class="group-title">{{ g.title }}</span>
           <el-button size="small" text :disabled="!connected" style="margin-left:auto" @click="readGroup(g)"><el-icon><Refresh /></el-icon> 读本组</el-button>
         </header>
@@ -220,20 +275,21 @@
           </div>
         </div>
       </section>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Setting, Refresh, Upload, FolderOpened, Download, Files, Promotion } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Setting, Refresh, Upload, FolderOpened, Download, Files, Promotion, Rank, Operation, RefreshLeft, Delete, Edit } from '@element-plus/icons-vue'
 import { jbdBus } from '@/jbd/jbd-bus'
 import {
   buildReadParam, buildWriteParam, buildSetBtName,
   buildEnterFactory, buildExitFactory,
 } from '@/jbd/jbd-protocol'
-import { paramRawToDisplay, paramDisplayToRaw, paramFormat, splitScd, combineScd, scdLevelLabel, scdLevelAmpLabel, scdDelayMsLabel } from '@/jbd/jbd-params'
+import { PARAM_TABLE, paramRawToDisplay, paramDisplayToRaw, paramFormat, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
 import StatusBadge from './StatusBadge.vue'
 
@@ -265,7 +321,7 @@ interface FieldDef {
   fullWidth?: boolean
   /** 下拉选项字段：value 为下发到 BMS 的原始寄存器值 */
   options?: { label: string; value: number }[]
-  /** 复合保护字段：单个寄存器 16 位，高字节=保护值档位(level)、低字节=延迟档位(delay) */
+  /** 复合保护字段：单个寄存器 16 位，低字节高半字节=保护值档位(level)、低字节低半字节=延迟档位(delay) */
   kind?: 'scd'
   scdPart?: 'level' | 'delay'
   /** 下发前需要输入密码校验（如检流阻值） */
@@ -287,6 +343,97 @@ interface ImportedParam {
 }
 const importedParams = ref<ImportedParam[]>([])
 const importDialogVisible = ref(false)
+
+// ====== 本地配置模板（localStorage） ======
+interface ConfigTemplate {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
+  data: any  // 与导出文件同构：{ type, version, params: [...] }
+}
+const TEMPLATE_KEY = 'jbd-param-templates'
+const templateDialogVisible = ref(false)
+const templates = ref<ConfigTemplate[]>([])
+
+function loadTemplates() {
+  try {
+    const raw = localStorage.getItem(TEMPLATE_KEY)
+    templates.value = raw ? JSON.parse(raw) : []
+    if (!Array.isArray(templates.value)) templates.value = []
+  } catch {
+    templates.value = []
+  }
+}
+function persistTemplates() {
+  try { localStorage.setItem(TEMPLATE_KEY, JSON.stringify(templates.value)) } catch { /* 忽略写入失败 */ }
+}
+function genId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+}
+function formatDate(ts: number): string {
+  const d = new Date(ts)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+function openTemplateDialog() {
+  loadTemplates()
+  templateDialogVisible.value = true
+}
+
+// 从模板列表中选择一个模板直接导入
+function importFromTemplate(t: ConfigTemplate) {
+  templateDialogVisible.value = false
+  applyImport(t.data)
+}
+
+// 模板对话框内的「从文件导入」：关闭对话框后用原流程解析
+function onFileChangeFromDialog(uploadFile: any) {
+  templateDialogVisible.value = false
+  onFileChange(uploadFile)
+}
+
+// 当前配置保存为本地模板
+async function saveAsTemplate() {
+  const data = buildExportData()
+  if (!data.params.length) { ElMessage.warning('当前没有可保存的参数（请先读取或填写）'); return }
+  try {
+    const { value } = await ElMessageBox.prompt('请输入模板名称', '保存为模板', {
+      inputValue: `模板 ${templates.value.length + 1}`,
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+    })
+    const name = (value || '').trim() || `模板 ${templates.value.length + 1}`
+    const now = Date.now()
+    templates.value.push({ id: genId(), name, createdAt: now, updatedAt: now, data })
+    persistTemplates()
+    ElMessage.success(`已保存模板「${name}」`)
+  } catch { /* 用户取消 */ }
+}
+
+async function renameTemplate(t: ConfigTemplate) {
+  try {
+    const { value } = await ElMessageBox.prompt('修改模板名称', '重命名模板', {
+      inputValue: t.name,
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+    })
+    const name = (value || '').trim()
+    if (!name) return
+    t.name = name
+    t.updatedAt = Date.now()
+    persistTemplates()
+  } catch { /* 用户取消 */ }
+}
+
+async function deleteTemplate(t: ConfigTemplate) {
+  try {
+    await ElMessageBox.confirm(`确定删除模板「${t.name}」吗？此操作不可恢复。`, '删除模板', { type: 'warning' })
+    templates.value = templates.value.filter((x) => x.id !== t.id)
+    persistTemplates()
+  } catch { /* 用户取消 */ }
+}
 
 function fieldByIndex(index: number): FieldState | undefined {
   return allFields.value.find((f) => f.index === index)
@@ -430,15 +577,16 @@ function onSelectChange(f: FieldState, v: any) {
   f.dirty = true
 }
 
-// ====== 复合保护字段（scd）：一个寄存器 16 位，高字节=保护值档位(level)、低字节=延迟档位(delay) ======
-/** 根据芯片方案生成下拉选项（0~15 共 16 档，label 显示真实物理量） */
+// ====== 复合保护字段（scd）：一个寄存器 16 位，低字节高半字节=保护值档位(level)、低字节低半字节=延迟档位(delay) ======
+/** 根据芯片方案生成下拉选项（0~15 共 16 档，label 显示具体物理量） */
 function scdOptions(f: FieldState): { label: string; value: number }[] {
   const chip = j.chipType.value
-  // level 部分：保护值档位按过流电流(A)显示（1档=80A 起，每档 +30A）
-  // delay 部分：按延迟(uS)显示
+  const shunt = shuntMOhm.value
+  // 二级过流 = 寄存器 40；短路 = 寄存器 41
+  const param: 'ocd' | 'scd' = f.index === 40 ? 'ocd' : 'scd'
   const fn: (i: number) => string = f.scdPart === 'delay'
-    ? scdDelayMsLabel
-    : (f.scdPart === 'level' ? scdLevelAmpLabel : (i: number) => scdLevelLabel(chip, i))
+    ? (i: number) => scdDelayLabelMs(param, chip, i)         // 延时统一 mS
+    : (i: number) => scdProtectLabel(param, chip, i, shunt)   // 保护值统一显示电流(A)
   const out: { label: string; value: number }[] = []
   for (let i = 0; i <= 15; i++) out.push({ label: fn(i), value: i })
   return out
@@ -449,6 +597,12 @@ function scdPeer(f: FieldState): FieldState | undefined {
     (x) => x.index === f.index && x.kind === 'scd' && x.scdPart !== f.scdPart,
   )
 }
+// 检流电阻(mΩ)：取自「检流电阻」模块寄存器 28 字段的显示值（kind:'shunt' → mΩ）
+const shuntMOhm = computed(() => {
+  const f = allFields.value.find((x) => x.index === 28)
+  const v = f?.value
+  return typeof v === 'number' && v > 0 ? v : 0
+})
 
 // ====== 下发密码校验（仅检流阻值等 needPassword 字段） ======
 const PWD_FIXED = 'tyln@1688'
@@ -503,10 +657,11 @@ type GroupAction = {
   fn: (g: { title: string; fields: FieldState[] }) => void | Promise<void>
 }
 
-const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: FieldDef[] }[] = [
+const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupAction; fields: FieldDef[] }[] = [
   // 1. 基本设置（12 项 / 3 列 × 4 行）
   {
     title: '基本设置',
+    order: 1,
     fields: [
       { label: '蓝牙名称', key: 'bt-name', index: 88, ascii: true, ascii_len: 16 },
       { label: '芯片类型', key: 'chip-type', customDisplay: 'chipType' },
@@ -525,6 +680,7 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
   // 2. 电流设置（10 项 / 3 列 × 4 行）
   {
     title: '电流设置',
+    order: 2,
     fields: [
       { label: '充电过流保护', index: 24, unit: 'mA', decimals: 0, step: 10 },
       { label: '充电过流延时', index: 52, unit: 'S', decimals: 0 },
@@ -532,17 +688,18 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
       { label: '放电过流保护', index: 25, unit: 'mA', decimals: 0, step: 10 },
       { label: '放电过流延时', index: 54, unit: 'S', decimals: 0 },
       { label: '放电过流恢复延时', index: 55, unit: 'S', decimals: 0 },
-      { label: '二级过流保护', index: 84, kind: 'scd', scdPart: 'level', note: '见IC' },
-      { label: '二级过流延时', index: 84, kind: 'scd', scdPart: 'delay', note: '见IC' },
-      { label: '短路保护', index: 85, kind: 'scd', scdPart: 'level', note: '见IC' },
-      { label: '短路保护延时', index: 85, kind: 'scd', scdPart: 'delay', note: '见IC' },
-      { label: '短路释放延时', index: 87, unit: 'S', decimals: 0 },
+      { label: '二级过流保护', index: 40, kind: 'scd', scdPart: 'level', note: '见IC' },
+      { label: '二级过流延时', index: 40, kind: 'scd', scdPart: 'delay', note: '见IC' },
+      { label: '短路保护', index: 41, kind: 'scd', scdPart: 'level', note: '见IC' },
+      { label: '短路保护延时', index: 41, kind: 'scd', scdPart: 'delay', note: '见IC' },
+      { label: '短路释放延时', index: 43, unit: 'S', decimals: 0 },
     ],
   },
 
   // 3. 容量电压（12 项 / 3 列 × 4 行）
   {
     title: '容量电压',
+    order: 3,
     fields: [
       { label: '10%', index: 109, unit: 'mV', decimals: 0 },
       { label: '20%', index: 37, unit: 'mV', decimals: 0 },
@@ -558,18 +715,35 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
       { label: '置空电压', index: 3, unit: 'mV', decimals: 0 },
     ],
   },
-  // 4. 初始化设置（3 项 / 3 列 × 1 行）
+  // 5. 温度探头配置（序号 30 低字节：温度探头 1~8 使能，1 字节 8 bit / 3 列 × 3 行 + 应用配置按钮）
   {
-    title: '初始化设置',
+    title: '温度探头配置',
+    order: 5,
+    action: { label: '应用配置', fn: (g) => writeGroupBitmap(g, 30) },
     fields: [
-      { label: '标称容量', index: 0, unit: 'Ah', decimals: 2, step: 0.01 },
-      { label: '自放电率', key: 'self-disc', readOnly: true, note: '需协议补充' },
-      { label: 'SOC的比例', key: 'soc-ratio', readOnly: true, note: '需协议补充' },
+      { label: '温度探头_1',  key: 'probe-1',  bitIndex: 30, bit: 0  },
+      { label: '温度探头_2',  key: 'probe-2',  bitIndex: 30, bit: 1  },
+      { label: '温度探头_3',  key: 'probe-3',  bitIndex: 30, bit: 2  },
+      { label: '温度探头_4',  key: 'probe-4',  bitIndex: 30, bit: 3  },
+      { label: '温度探头_5',  key: 'probe-5',  bitIndex: 30, bit: 4  },
+      { label: '温度探头_6',  key: 'probe-6',  bitIndex: 30, bit: 5  },
+      { label: '温度探头_7',  key: 'probe-7',  bitIndex: 30, bit: 6  },
+      { label: '温度探头_8',  key: 'probe-8',  bitIndex: 30, bit: 7  },
     ],
   },
-  // 5. 系统设置（5 项 / 3 列 × 2 行）
+  // 6. 均衡设置（2 项 / 3 列 × 1 行）
+  {
+    title: '均衡设置',
+    order: 6,
+    fields: [
+      { label: '均衡电流', key: 'bal-current', readOnly: true, note: '需协议补充' },
+      { label: '均衡精度', index: 27, unit: 'mV', decimals: 0 },
+    ],
+  },
+  // 4. 系统设置（5 项 / 3 列 × 2 行）
   {
     title: '系统设置',
+    order: 4,
     fields: [
       { label: '均衡电流', key: 'bal-current-2', readOnly: true, note: '需协议补充' },
       { label: '休眠时间', index: 122, unit: 'S', decimals: 0 },
@@ -578,25 +752,19 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
       { label: '循环次数', index: 7, unit: '次', decimals: 0 },
     ],
   },
-  // 6. 均衡设置（2 项 / 3 列 × 1 行）
+  // 8. 初始化设置（2 项 / 3 列 × 1 行）
   {
-    title: '均衡设置',
+    title: '初始化设置',
+    order: 8,
     fields: [
-      { label: '均衡电流', key: 'bal-current', readOnly: true, note: '需协议补充' },
-      { label: '均衡精度', index: 27, unit: 'mV', decimals: 0 },
+      { label: '标称容量', index: 0, unit: 'Ah', decimals: 2, step: 0.01 },
+      { label: '循环容量', index: 1, unit: 'Ah', decimals: 2, step: 0.01 },
     ],
   },
-  // 7. 检流电阻（独立模块：index 28；导入模板时不随下发）
-  {
-    title: '检流电阻',
-    cols: 1,
-    fields: [
-      { label: '检流阻值', index: 28, unit: 'mΩ', decimals: 2, step: 0.01, note: '独立配置', needPassword: true },
-    ],
-  },
-  // 8. 温度设置（12 项 / 3 列 × 4 行）
+  // 9. 温度设置（12 项 / 3 列 × 4 行）
   {
     title: '温度设置',
+    order: 9,
     fields: [
       { label: '充电高温保护', index: 8, unit: '℃', decimals: 1 },
       { label: '充电高温恢复', index: 9, unit: '℃', decimals: 1 },
@@ -612,9 +780,10 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
       { label: '放电低温延时', index: 46, unit: 'S', decimals: 0 },
     ],
   },
-  // 9. 保护参数（14 项 / 3 列 × 5 行）
+  // 10. 保护参数（14 项 / 3 列 × 5 行）
   {
     title: '保护参数',
+    order: 10,
     fields: [
       { label: '单体过压保护', index: 20, unit: 'mV', decimals: 0 },
       { label: '单体过压恢复', index: 21, unit: 'mV', decimals: 0 },
@@ -633,9 +802,10 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
     ],
   },
 
-  // 10. 功能设置（11 项 / 3 列 × 4 行，末行 + 应用设置按钮）
+  // 11. 功能设置（11 项 / 3 列 × 4 行，末行 + 应用设置按钮）
   {
     title: '功能设置',
+    order: 11,
     action: { label: '应用设置', fn: (g) => writeGroupBitmap(g, 29) },
     fields: [
       { label: '开关功能', key: 'cfg-sw', bitIndex: 29, bit: 0 },
@@ -651,41 +821,146 @@ const GROUP_DEFS: { title: string; cols?: number; action?: GroupAction; fields: 
       { label: '蜂鸣器续延', key: 'cfg-buzzer', bitIndex: 29, bit: 9 },
     ],
   },
-  // 11. 温度探头配置（PDF：序号 30 = 温度探头配置，2 字节共 16 bit，每位对应一路探头使能 / 3 列 × 6 行 + 应用配置按钮）
+  // 7. 检流电阻（独立模块：index 28；导入模板时不随下发）
   {
-    title: '温度探头配置',
-    action: { label: '应用配置', fn: (g) => writeGroupBitmap(g, 30) },
+    title: '检流电阻',
+    order: 7,
+    cols: 1,
     fields: [
-      { label: '温度探头_1',  key: 'probe-1',  bitIndex: 30, bit: 0  },
-      { label: '温度探头_2',  key: 'probe-2',  bitIndex: 30, bit: 1  },
-      { label: '温度探头_3',  key: 'probe-3',  bitIndex: 30, bit: 2  },
-      { label: '温度探头_4',  key: 'probe-4',  bitIndex: 30, bit: 3  },
-      { label: '温度探头_5',  key: 'probe-5',  bitIndex: 30, bit: 4  },
-      { label: '温度探头_6',  key: 'probe-6',  bitIndex: 30, bit: 5  },
-      { label: '温度探头_7',  key: 'probe-7',  bitIndex: 30, bit: 6  },
-      { label: '温度探头_8',  key: 'probe-8',  bitIndex: 30, bit: 7  },
-      { label: '温度探头_9',  key: 'probe-9',  bitIndex: 30, bit: 8  },
-      { label: '温度探头_10', key: 'probe-10', bitIndex: 30, bit: 9  },
-      { label: '温度探头_11', key: 'probe-11', bitIndex: 30, bit: 10 },
-      { label: '温度探头_12', key: 'probe-12', bitIndex: 30, bit: 11 },
-      { label: '温度探头_13', key: 'probe-13', bitIndex: 30, bit: 12 },
-      { label: '温度探头_14', key: 'probe-14', bitIndex: 30, bit: 13 },
-      { label: '温度探头_15', key: 'probe-15', bitIndex: 30, bit: 14 },
-      { label: '温度探头_16', key: 'probe-16', bitIndex: 30, bit: 15 },
+      { label: '检流阻值', index: 28, unit: 'mΩ', decimals: 2, step: 0.01, note: '独立配置', needPassword: true },
     ],
   },
 ]
 
-const groups = ref(
-  GROUP_DEFS.map((g) => ({
-    title: g.title,
-    cols: g.cols,
-    action: g.action,
-    fields: g.fields.map(makeField),
-  })),
-)
+type GroupObj = { title: string; cols?: number; action?: GroupAction; fields: FieldState[] }
+const builtGroups: GroupObj[] = GROUP_DEFS.map((g) => ({ title: g.title, cols: g.cols, action: g.action, fields: g.fields.map(makeField) }))
+// 出厂默认左右两列布局（用户拖拽确认后的顺序，已固化进代码）。
+// 如需调整默认排布，直接改这里的标题顺序即可；GROUP_DEFS 中未列出的分组会自动补到右列末尾。
+const defaultColumnOrder: [string[], string[]] = [
+  ['基本设置', '电流设置', '保护参数', '温度探头配置', '检流电阻'],
+  ['初始化设置', '容量电压', '温度设置', '功能设置', '系统设置', '均衡设置'],
+]
+function buildColumnsFromTitles(order: string[][]): GroupObj[][] {
+  const pool = new Map(builtGroups.map((g) => [g.title, g]))
+  const cols: GroupObj[][] = order.map((col) => {
+    const arr: GroupObj[] = []
+    for (const t of col) {
+      const g = pool.get(t)
+      if (g) { arr.push(g); pool.delete(t) }
+    }
+    return arr
+  })
+  for (const g of pool.values()) cols[cols.length - 1].push(g)
+  return cols
+}
+const columns = ref<GroupObj[][]>(buildColumnsFromTitles(defaultColumnOrder))
+// 兼容下游只读消费（字段汇总等）
+const groups = computed(() => columns.value.flat())
 const allFields = computed(() => groups.value.flatMap((g) => g.fields))
 const dirtyCount = computed(() => allFields.value.filter((f) => f.dirty).length)
+
+// ====== 分组拖动排序（点击「拖动排序」进入拖动模式；左右两列各自可拖拽重排，也支持跨列移动；顺序持久化到 localStorage） ======
+const DRAG_ORDER_KEY = 'jbd-param-group-order'
+const dragMode = ref(false)
+const draggedTitle = ref<string | null>(null)
+
+// 在左右两列中查找某分组当前所在位置
+function findGroup(title: string): { col: 0 | 1; idx: number } | null {
+  for (const c of [0, 1] as const) {
+    const idx = columns.value[c].findIndex((g) => g.title === title)
+    if (idx >= 0) return { col: c, idx }
+  }
+  return null
+}
+
+function applySavedOrder() {
+  let saved: string[][] | null = null
+  try {
+    const raw = localStorage.getItem(DRAG_ORDER_KEY)
+    if (raw) {
+      const v = JSON.parse(raw)
+      if (Array.isArray(v)) {
+        if (v.every((c) => Array.isArray(c))) {
+          // 新格式：[[左列...],[右列...]]
+          saved = (v as unknown[]).map((c) => (c as unknown[]).filter((x) => typeof x === 'string')) as string[][]
+        } else if (v.every((x) => typeof x === 'string')) {
+          // 旧版单数组格式兼容：按半分迁移到两列
+          const mid = Math.ceil(v.length / 2)
+          saved = [v.slice(0, mid), v.slice(mid)]
+        }
+      }
+    }
+  } catch { /* 忽略损坏的本地存储 */ }
+  if (!saved) return
+  const pool = new Map(columns.value.flat().map((g) => [g.title, g]))
+  const left: GroupObj[] = []
+  const right: GroupObj[] = []
+  for (const t of saved[0] ?? []) {
+    const g = pool.get(t)
+    if (g) { left.push(g); pool.delete(t) }
+  }
+  for (const t of saved[1] ?? []) {
+    const g = pool.get(t)
+    if (g) { right.push(g); pool.delete(t) }
+  }
+  // 新增/缺失的分组补到右列末尾，避免丢失
+  for (const g of pool.values()) right.push(g)
+  columns.value = [left, right]
+}
+function saveOrder() {
+  try {
+    localStorage.setItem(
+      DRAG_ORDER_KEY,
+      JSON.stringify(columns.value.map((col) => col.map((g) => g.title))),
+    )
+  } catch { /* 忽略写入失败（如隐私模式） */ }
+}
+applySavedOrder()
+
+function onDragStart(g: { title: string }) {
+  draggedTitle.value = g.title
+}
+// 拖到某分组卡片上：插入到该卡片所在位置（可在同列或跨列）
+function onDropGroup(targetTitle: string, targetCol: number) {
+  const fromTitle = draggedTitle.value
+  draggedTitle.value = null
+  if (!fromTitle || fromTitle === targetTitle) return
+  const moved = findGroup(fromTitle)
+  if (!moved) return
+  const node = columns.value[moved.col][moved.idx]
+  // 先从原列移除
+  columns.value[moved.col] = columns.value[moved.col].filter((g) => g.title !== fromTitle)
+  // 再插入目标列指定位置
+  const targetArr = columns.value[targetCol].slice()
+  const ti = targetArr.findIndex((g) => g.title === targetTitle)
+  if (ti < 0) targetArr.push(node)
+  else targetArr.splice(ti, 0, node)
+  columns.value[targetCol] = targetArr
+  saveOrder()
+}
+// 拖到列空白区：追加到该列末尾（支持跨列移动）
+function onDropColumn(targetCol: number) {
+  const fromTitle = draggedTitle.value
+  draggedTitle.value = null
+  if (!fromTitle) return
+  const moved = findGroup(fromTitle)
+  if (!moved || moved.col === targetCol) return
+  const node = columns.value[moved.col][moved.idx]
+  columns.value[moved.col] = columns.value[moved.col].filter((g) => g.title !== fromTitle)
+  const targetArr = columns.value[targetCol].slice()
+  targetArr.push(node)
+  columns.value[targetCol] = targetArr
+  saveOrder()
+}
+function onDragEnd() {
+  draggedTitle.value = null
+}
+// 恢复出厂默认顺序（清掉本地存储的拖拽结果，回退到代码固化 defaultColumnOrder）
+function resetToDefault() {
+  try { localStorage.removeItem(DRAG_ORDER_KEY) } catch { /* 忽略 */ }
+  columns.value = buildColumnsFromTitles(defaultColumnOrder)
+  ElMessage.success('已恢复默认顺序')
+}
 
 // ====== 工厂模式 ======
 async function enterFactory(): Promise<boolean> {
@@ -935,21 +1210,138 @@ async function readGroup(g: { title: string; fields: FieldState[] }) {
   ElMessage[fail ? 'warning' : 'success'](`本组读取完成：${ok} 成功，${fail} 失败${tip}`)
 }
 
+// ====== 批量寄存器读取（0xFA，固件单帧上限 95 寄存器，按段拆分）======
+// 读取全部：把 0~183 共 184 个寄存器按 MAX_READ_REGS 切段，每段发一条 0xFA 读指令，
+// 全部应答收齐后填入 rawMap，再逐字段回填 UI。相比逐单元串行读，往返次数从约 30 降到 2。
+const MAX_READ_REGS = 95
+const BATCH_TIMEOUT = 3000
+
+/** 字段依赖的寄存器序号集合（用于分段容错：某段失败时只标红该段覆盖的字段） */
+function fieldRegisters(f: FieldState): number[] {
+  if (isBitSwitch(f)) return [f.bitIndex!]
+  if (f.ascii) {
+    const len = f.ascii_len ?? 8
+    const out: number[] = []
+    for (let i = f.index!; i < f.index! + len; i++) out.push(i)
+    return out
+  }
+  if (f.index === undefined) return []
+  return [f.index]
+}
+
+/** 从 rawMap（regIndex -> 16 位原始值）回填单个字段，等价于 readField 的成功分支。
+ *  bit 开关：更新共享位图并扇出到所有同位图字段；
+ *  ASCII：把连续寄存器按大端拼回字节流再走 ASCII 解析；
+ *  scd：拆分高低字节档位并同步 peer；其余按换算表回填。 */
+function applyFieldFromRaw(f: FieldState, rawMap: Record<number, number>): boolean {
+  if (isBitSwitch(f)) {
+    const bi = f.bitIndex!
+    if (rawMap[bi] === undefined) return false
+    bitmaps.value[bi] = rawMap[bi]
+    const peers = allFields.value.filter((x) => x.bitIndex === bi)
+    for (const p of peers) {
+      p.value = ((rawMap[bi] >> (p.bit ?? 0)) & 1) === 1
+      p.dirty = false
+      p.status = 'ok'
+    }
+    return true
+  }
+  if (f.ascii) {
+    const len = f.ascii_len ?? 8
+    const bytes: number[] = []
+    for (let i = f.index!; i < f.index! + len; i++) {
+      const r = rawMap[i]
+      if (r === undefined) return false
+      bytes.push((r >> 8) & 0xff, r & 0xff)
+    }
+    const reg = f.index!
+    const data = [(reg >> 8) & 0xff, reg & 0xff, len, ...bytes]
+    f.value = parseAsciiResponse({ data, status: 0, cmd: 0xfa } as any, len * 2)
+    f.dirty = false
+    f.status = 'ok'
+    return true
+  }
+  if (f.customDisplay === 'date' || f.customDisplay === 'serialRaw') {
+    if (f.index === undefined || rawMap[f.index] === undefined) return false
+    f.value = rawMap[f.index]
+    f.dirty = false
+    f.status = 'ok'
+    return true
+  }
+  if (f.kind === 'scd') {
+    const raw = rawMap[f.index!]
+    if (raw === undefined) return false
+    const { level, delay } = splitScd(raw)
+    const peer = scdPeer(f)
+    if (f.scdPart === 'level') f.value = level
+    else f.value = delay
+    if (peer) peer.value = f.scdPart === 'level' ? delay : level
+    f.dirty = false
+    f.status = 'ok'
+    if (peer) { peer.dirty = false; peer.status = 'ok' }
+    return true
+  }
+  if (f.options) {
+    if (rawMap[f.index!] === undefined) return false
+    f.value = rawMap[f.index!] & 0xffff
+    f.dirty = false
+    f.status = 'ok'
+    return true
+  }
+  if (rawMap[f.index!] === undefined) return false
+  f.value = paramRawToDisplay(f.index!, rawMap[f.index!])
+  f.dirty = false
+  f.status = 'ok'
+  return true
+}
+
 async function readAll() {
   if (!props.connected) return
-  const { units, skip } = planReadUnits(allFields.value)
   busy.value = true
+  progress.value = 0
+  // 参数序号表 0~183，共 184 个寄存器；固件单帧最多读 95 个，故拆 2 段。
+  const maxIdx = PARAM_TABLE[PARAM_TABLE.length - 1].index
+  const total = maxIdx + 1
+  const rawMap: Record<number, number> = {}
+  const failedRegs = new Set<number>()
+  const chunks: { start: number; count: number }[] = []
+  for (let s = 0; s < total; s += MAX_READ_REGS) {
+    chunks.push({ start: s, count: Math.min(MAX_READ_REGS, total - s) })
+  }
+  let chunkIdx = 0
+  for (const ch of chunks) {
+    progress.value = Math.round((chunkIdx / chunks.length) * 100)
+    jbdBus.send(buildReadParam(ch.start, ch.count))
+    const resp = await jbdBus.onceResponse(BATCH_TIMEOUT, 0xfa)
+    if (!resp || resp.timeout || resp.status !== 0x00 || resp.cmd !== 0xfa) {
+      ElMessage.warning(`批量读取失败：寄存器 ${ch.start}~${ch.start + ch.count - 1}（${resp?.timeout ? '超时' : `0x${resp?.status?.toString(16)}`}）`)
+      for (let r = ch.start; r < ch.start + ch.count; r++) failedRegs.add(r)
+    } else if (resp.data && resp.data.length >= 3) {
+      const startReg = (resp.data[0] << 8) | resp.data[1]
+      const cnt = resp.data[2]
+      for (let i = 0; i < cnt; i++) {
+        const off = 3 + i * 2
+        if (off + 1 >= resp.data.length) break
+        rawMap[startReg + i] = ((resp.data[off] << 8) | resp.data[off + 1]) & 0xffff
+      }
+    }
+    chunkIdx++
+  }
+  // 逐字段回填，分段容错：仅依赖失败段的字段标红，其余照常更新
   let ok = 0, fail = 0
-  for (let i = 0; i < units.length; i++) {
-    progress.value = Math.round(((i) / units.length) * 100)
-    const r = await readField(units[i])
-    if (r) ok++; else fail++
+  for (const f of allFields.value) {
+    const canReadCustomDisplay = f.customDisplay === 'date' || f.customDisplay === 'serialRaw'
+    if (f.customDisplay && !canReadCustomDisplay) continue // 派生展示（芯片类型/硬件版本/NTC 数/均衡模式），不参与 0xFA 读
+    if (f.readOnly && f.index === undefined) continue
+    const regs = fieldRegisters(f)
+    if (regs.some((r) => failedRegs.has(r))) { f.status = 'fail'; fail++; continue }
+    if (applyFieldFromRaw(f, rawMap)) ok++
+    else { f.status = 'fail'; fail++ }
   }
   progress.value = 100
   busy.value = false
-  const tip = skip ? `（跳过 ${skip} 只读项）` : ''
-  if (fail) ElMessage.warning(`全部读取完成：${ok} 成功，${fail} 失败${tip}`)
-  else ElMessage.success(`全部读取成功${tip}`)
+  if (fail) ElMessage.warning(`全部读取完成：${ok} 成功，${fail} 失败（分段容错，仅失败段标红）`)
+  else ElMessage.success(`全部读取成功（${chunks.length} 条批量指令）`)
 }
 
 async function writeAll() {
@@ -1184,12 +1576,17 @@ async function sendAllImported() {
   importDialogVisible.value = false
 }
 
-function exportConfig() {
+// 构造与导出文件同构的配置对象（供「导出配置」与「存为模板」共用）
+function buildExportData() {
   const params = allFields.value
     .filter((f) => f.value !== null && f.index !== undefined && !f.customDisplay && !f.readOnly && !f.ascii && f.bitIndex === undefined)
     .map((f) => ({ index: f.index!, label: f.label, unit: f.unit || '', value: f.value as number, raw: paramDisplayToRaw(f.index!, f.value as number) }))
-  if (!params.length) { ElMessage.warning('当前没有可导出的参数（请先读取或填写）'); return }
-  const data = { type: 'jbd-param-config', version: '1.0', exportedAt: new Date().toISOString(), params }
+  return { type: 'jbd-param-config', version: '1.0', exportedAt: new Date().toISOString(), params }
+}
+
+function exportConfig() {
+  const data = buildExportData()
+  if (!data.params.length) { ElMessage.warning('当前没有可导出的参数（请先读取或填写）'); return }
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -1200,7 +1597,7 @@ function exportConfig() {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
-  ElMessage.success(`已导出 ${params.length} 个参数`)
+  ElMessage.success(`已导出 ${data.params.length} 个参数`)
 }
 </script>
 
@@ -1231,25 +1628,39 @@ function exportConfig() {
 .tip { font-size: var(--fs-caption); color: var(--text-tertiary); }
 .progress-bar { padding: 0 var(--space-6); }
 
-/* 1 排 2 列「瀑布流」布局：卡片按内容高度自然堆叠（column 流式），
-   不再为对齐同行最高卡而拉伸，消除短卡片下方的空白间隙 */
+/* 左右两列容器布局：每列为独立纵向流，列内卡片自然堆叠；
+   拖动模式下两列均为可放置区，支持列内重排与跨列移动 */
 .groups {
-  column-count: 2;
-  column-gap: var(--space-5);
+  display: flex;
+  gap: var(--space-5);
+  align-items: flex-start;
+}
+.group-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
 }
 @media (max-width: 1280px) {
-  .groups { column-count: 1; }
+  .groups { flex-direction: column; }
+  .group-col { width: 100%; }
 }
 .group-card {
-  break-inside: avoid;
-  -webkit-column-break-inside: avoid;
-  page-break-inside: avoid;
-  margin-bottom: var(--space-5);
   display: flex;
   flex-direction: column;
   min-width: 0;
   width: 100%;
 }
+/* 拖动排序模式：列高亮为可放置区 + 卡片可抓取视觉 */
+.group-col.col-dragging {
+  outline: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+}
+.group-card.is-dragging { cursor: grab; outline: 1px dashed var(--border-strong); }
+.group-card.is-dragging:active { cursor: grabbing; }
+.drag-handle { cursor: grab; color: var(--text-tertiary); margin-right: var(--space-2); align-self: center; }
 .group-title { font-size: var(--fs-h3); font-weight: var(--fw-semibold); color: var(--text-primary); }
 
 /* 分组内字段：3 列网格（可通过 cols 覆盖） */
@@ -1376,4 +1787,50 @@ function exportConfig() {
   margin: 0 calc(var(--space-2) * -1);
 }
 .import-row .muted { color: var(--text-tertiary); }
+
+/* ====== 导入配置模板列表弹窗 ====== */
+.tpl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 var(--space-3);
+}
+.tpl-count { margin-left: auto; font-size: var(--fs-caption); color: var(--text-tertiary); }
+.tpl-list {
+  max-height: 52vh;
+  overflow-y: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.tpl-empty {
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--fs-body-sm);
+}
+.tpl-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+.tpl-item:hover { border-color: var(--border-strong); background: var(--bg-raised); }
+.tpl-main { min-width: 0; flex: 1; }
+.tpl-name {
+  font-size: var(--fs-body-sm);
+  color: var(--text-primary);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tpl-meta { font-size: var(--fs-caption); color: var(--text-tertiary); margin-top: 2px; }
+.tpl-actions { display: flex; align-items: center; gap: var(--space-1); flex-shrink: 0; }
 </style>

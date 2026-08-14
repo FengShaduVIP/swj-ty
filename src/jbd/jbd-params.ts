@@ -199,91 +199,132 @@ export function paramDispUnit(reg: number): string {
 }
 
 // ============================ 短路 / 二级过流保护（复合寄存器） ============================
-// 说明：寄存器 84（二级过流保护设置）、85（短路保护设置）各为 1 个 16 位字，
-//   高字节（bit15~8）= 保护值档位（SCD_T / OCD_T，0~15）
-//   低字节（bit7~0） = 延迟档位（SCD_D / OCD_D，0~15）
-// 不同芯片方案的档位→真实值换算公式不同，下拉框只存 0~15 档位，下发时合成 16 位字。
+// 权威（PDF 第 16–17 页）：寄存器 40（二级过流）/ 41（短路）各为 1 个 16 位字，
+//   有效信息位于「低 8 位」：高半字节(bit7~4)=保护值档位(T)，低半字节(bit3~0)=延时档位(D)。
+// 保护值本质为检流电阻上的电压阈值(mV)；折算电流(A) = 电压(mV) / 检流电阻(mΩ)。
+// 中颖 303(4) 在 PDF 中未给公式，按需求与中颖 309(3) 保持一致（复用其查表）。
+// 下拉框只存 0~15 档位，下发时合回 16 位字（低字节 = TTTT DDDD）。
 
 export interface ScdParts {
-  /** 保护值档位 0~15（高字节） */
+  /** 保护值档位 0~15（低字节高半字节） */
   level: number
-  /** 延迟档位 0~15（低字节） */
+  /** 延迟档位 0~15（低字节低半字节） */
   delay: number
 }
 
-/** 16 位原始值 → 高低字节档位 */
+/** 16 位原始值 → 低字节高低半字节档位（权威：level 在高半字节，delay 在低半字节） */
 export function splitScd(raw: number): ScdParts {
   const v = raw & 0xffff
-  return { level: (v >> 8) & 0x0f, delay: v & 0x0f }
+  return { level: (v >> 4) & 0x0f, delay: v & 0x0f }
 }
 
-/** 高低字节档位 → 16 位原始值（用于下发） */
+/** 保护值档位 + 延迟档位 → 16 位原始值（下发用，低字节 = TTTT DDDD，高字节为 0） */
 export function combineScd(level: number, delay: number): number {
-  return (((level & 0x0f) << 8) | (delay & 0x0f)) & 0xffff
+  return (((level & 0x0f) << 4) | (delay & 0x0f)) & 0xffff
 }
+
+// ---- 逐芯片查表（来源：PDF 第 16–19 页 + 真实上位机截图核对；中颖303=中颖309） ----
+// 注意：不同芯片的保护值「内部单位」不同：
+//   - 凹凸(1)：保护值直接为电流 A（固件内部已含检流电阻折算）
+//   - 其他芯片：保护值为检流电阻上的电压阈值 mV，需 ÷检流电阻(mΩ) 得电流(A)
+//     检流电阻未知（未读取寄存器28）时，按 DEFAULT_SHUNT_MOHM 估算以始终显示 A。
+// 二级过流保护值 (OCD_T → 内部单位：凹凸=A, 其余=mV)
+const OCD_MV: Record<number, number[]> = {
+  1: Array.from({ length: 16 }, (_, t) => 100 * t + 50),       // 凹凸 7717：50,150,250,...1550 **A**（截图核对）
+  2: Array.from({ length: 16 }, (_, t) => 20 * t + 10),       // 松下 49522 (mV)
+  3: [20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 160, 180, 200],   // 中颖 309 (mV)
+  4: [20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 160, 180, 200],   // 中颖 303（=309）(mV)
+  5: [4, 10, 16, 21, 28, 33, 38, 44, 50, 55, 61, 67, 73, 78, 84, 90],            // 集澈 DC10XX (mV)
+  6: Array.from({ length: 16 }, (_, t) => 10 * (t + 1)),      // OZ3714 (mV)
+}
+// 短路保护值 (SCD_T → 内部单位：凹凸=A, 其余=mV)
+const SCD_MV: Record<number, number[]> = {
+  1: Array.from({ length: 16 }, (_, t) => 200 * t + 200),     // 凹凸 7717：200,400,600,...3200 **A**（截图核对）
+  2: Array.from({ length: 16 }, (_, t) => 40 * t + 20),       // 松下 49522 (mV)
+  3: [50, 80, 110, 140, 170, 200, 230, 260, 290, 320, 350, 400, 500, 600, 800, 1000],  // 中颖 309 (mV)
+  4: [50, 80, 110, 140, 170, 200, 230, 260, 290, 320, 350, 400, 500, 600, 800, 1000],  // 中颖 303（=309）(mV)
+  5: [19, 30, 41, 53, 64, 75, 87, 98, 110, 120, 132, 143, 155, 166, 177, 190],          // 集澈 (mV)
+  6: Array.from({ length: 16 }, (_, t) => 40 * (t + 1)),      // OZ3714 (mV)
+}
+// 二级过流延时 (OCD_D → mS)
+const OCD_DELAY_MS: Record<number, number[]> = {
+  1: Array.from({ length: 16 }, (_, d) => 500 * (d + 1)),      // 凹凸 7717：500,1000,...8000 **ms**（截图核对）
+  2: Array.from({ length: 16 }, (_, d) => 20 * d + 10),       // 松下 49522
+  3: [50, 100, 200, 400, 600, 800, 1000, 2000, 4000, 6000, 8000, 10000, 15000, 20000, 30000, 40000],
+  4: [50, 100, 200, 400, 600, 800, 1000, 2000, 4000, 6000, 8000, 10000, 15000, 20000, 30000, 40000], // 中颖 303（=309）
+  5: [32, 80, 160, 320, 640, 1280, 2560, 5120, 0, 0, 0, 0, 0, 0, 0, 0],   // 集澈：仅 0~7 有效
+  6: Array.from({ length: 16 }, (_, d) => 2 * (d + 1)),       // OZ3714：2,4,...32
+}
+// 短路延时 (SCD_D → µS)；界面统一以 mS 展示，故读取时 ÷1000
+const SCD_DELAY_US: Record<number, number[]> = {
+  1: Array.from({ length: 16 }, (_, d) => 62.5 * d + 62.5),
+  2: Array.from({ length: 16 }, (_, d) => 62.5 * d + 31.25),
+  3: Array.from({ length: 16 }, (_, d) => 64 * d),            // 中颖 309：64·D
+  4: Array.from({ length: 16 }, (_, d) => 64 * d),            // 中颖 303（=309）
+  5: [560, 800, 1600, 3200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // 集澈：仅 0~3 有效
+  6: Array.from({ length: 16 }, (_, d) => 62.5 * (d + 1)),    // OZ3714
+}
+
+function lookup(table: Record<number, number[]>, chip: number | null, i: number): number {
+  const arr = table[chip ?? -1]
+  return arr ? (arr[i & 0x0f] ?? 0) : 0
+}
+
+/** 二级过流保护值 mV（按芯片） */
+export function overcurrentMv(chip: number | null, level: number): number {
+  return lookup(OCD_MV, chip, level)
+}
+/** 短路保护值 mV（按芯片） */
+export function shortCircuitMv(chip: number | null, level: number): number {
+  return lookup(SCD_MV, chip, level)
+}
+/** 二级过流延时 mS（按芯片） */
+export function overcurrentDelayMs(chip: number | null, delay: number): number {
+  return lookup(OCD_DELAY_MS, chip, delay)
+}
+/** 短路延时 µS（按芯片）；界面展示时再 ÷1000 转 mS */
+export function shortCircuitDelayUs(chip: number | null, delay: number): number {
+  return lookup(SCD_DELAY_US, chip, delay)
+}
+
+function trimNum(n: number, max = 3): string {
+  if (!isFinite(n)) return '—'
+  const r = Math.round(n * 10 ** max) / 10 ** max
+  return String(r)
+}
+
+export type ScdParam = 'ocd' | 'scd'
 
 /**
- * 保护值档位 → 真实电压(mV)
- *   凹凸(1): 20*T + 20；松下(2): 40*T + 20；未知方案默认凹凸。
+ * 保护值下拉 label：档 N · 电流(A)。
+ *   - 凹凸(1)：查表值直接为电流(A)，无需折算，直接显示 A。
+ *   - 其他芯片：查表值为电压阈值(mV)，÷检流电阻(mΩ) 得电流(A)；检流电阻未知时按 DEFAULT_SHUNT_MOHM 估算。
+ *   - 全部芯片统一显示单位 A（无 mV 回退）。
+ * TI(0) 方案位域不同且无 mV 表，label 仅显示档位并标注「TI专用」。
  */
-export function scdLevelMv(chipType: number | null, level: number): number {
-  const t = level & 0x0f
-  if (chipType === 2) return 40 * t + 20
-  return 20 * t + 20
+/** 检流电阻未知时的默认估算值(mΩ)，用于把 mV 阈值折算为电流(A)显示。
+ *  典型小容量 BMS 采样电阻为 0.1 mΩ（与用户提供的凹凸上位机截图吻合：
+ *  PDF 公式 20*SCD_T+20 mV ÷ 0.1 = 200/400/…/2000 A，与截图一致）。 */
+export const DEFAULT_SHUNT_MOHM = 0.1
+
+export function scdProtectLabel(param: ScdParam, chip: number | null, level: number, shuntMOhm: number): string {
+  if (chip === 0) return `档${level} · TI专用`
+  // 凹凸芯片：保护值直接是安培(A)
+  if (chip === 1) {
+    const amps = param === 'ocd' ? overcurrentMv(chip, level) : shortCircuitMv(chip, level)
+    return `档${level} · ${trimNum(amps, 1)} A`
+  }
+  // 其他芯片：mV → A（÷检流电阻；检流电阻未知时按默认值估算）
+  const mv = param === 'ocd' ? overcurrentMv(chip, level) : shortCircuitMv(chip, level)
+  const shunt = shuntMOhm > 0 ? shuntMOhm : DEFAULT_SHUNT_MOHM
+  return `档${level} · ${trimNum(mv / shunt, 2)} A`
 }
 
-/**
- * 保护值档位 → 真实过流电流(A)
- *   按实测档位表递推：1档=80A, 2档=110A, ... 每档 +30A → 公式 50 + 30*N。
- *   0 档视为未设置，显示为 0A。
- */
-export function scdLevelAmp(level: number): number {
-  const n = level & 0x0f
-  if (n === 0) return 0
-  return 50 + 30 * n
-}
-
-/**
- * 延迟档位 → 真实延迟(uS)
- *   凹凸(1): 62.5*D + 62.5；松下(2): 62.5*D + 31.25；未知方案默认凹凸。
- */
-export function scdDelayUs(chipType: number | null, delay: number): number {
-  const d = delay & 0x0f
-  if (chipType === 2) return 62.5 * d + 31.25
-  return 62.5 * d + 62.5
-}
-
-/** 下拉框 option label：第 N 档 → 真实电压值，如 『档2 · 40 mV』 */
-export function scdLevelLabel(chipType: number | null, level: number): string {
-  return `档${level} · ${scdLevelMv(chipType, level)} mV`
-}
-/** 下拉框 option label：第 N 档 → 真实过流电流值，如 『档1 · 80 A』（0 档未设置） */
-export function scdLevelAmpLabel(level: number): string {
-  const n = level & 0x0f
-  return `档${n} · ${scdLevelAmp(n)} A`
-}
-export function scdDelayLabel(chipType: number | null, delay: number): string {
-  return `档${delay} · ${scdDelayUs(chipType, delay)} µS`
-}
-
-/**
- * 延迟档位 → 真实延时(ms)
- *   实测档位表：1档=8ms, 2档=20ms, 3档=40ms, ... 8档=1280ms，
- *   之后每档 ×2 递推：n<=2 时 1→8 / 2→20，n>=3 时 20 * 2^(n-2)。
- *   0 档视为未设置，显示为 0ms。
- */
-export function scdDelayMs(delay: number): number {
-  const n = delay & 0x0f
-  if (n === 0) return 0
-  if (n === 1) return 8
-  if (n === 2) return 20
-  return 20 * Math.pow(2, n - 2)
-}
-
-/** 下拉框 option label：第 N 档 → 真实延时(ms)，如 『档1 · 8 ms』 */
-export function scdDelayMsLabel(delay: number): string {
-  const n = delay & 0x0f
-  return `档${n} · ${scdDelayMs(n)} ms`
+/** 延时下拉 label：统一以 mS 展示（短路延时由 µS ÷1000 换算） */
+export function scdDelayLabelMs(param: ScdParam, chip: number | null, delay: number): string {
+  if (chip === 0) return `档${delay} · TI专用`
+  const ms = param === 'ocd' ? overcurrentDelayMs(chip, delay) : shortCircuitDelayUs(chip, delay) / 1000
+  return `档${delay} · ${trimNum(ms, 3)} ms`
 }
 
 /** 显示用格式化字符串（带合适小数位 / 十六进制 / 日期） */
