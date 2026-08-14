@@ -289,7 +289,7 @@ import {
   buildReadParam, buildWriteParam, buildSetBtName,
   buildEnterFactory, buildExitFactory,
 } from '@/jbd/jbd-protocol'
-import { PARAM_TABLE, paramRawToDisplay, paramDisplayToRaw, paramFormat, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs } from '@/jbd/jbd-params'
+import { paramRawToDisplay, paramDisplayToRaw, paramFormat, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
 import StatusBadge from './StatusBadge.vue'
 
@@ -1211,12 +1211,12 @@ async function readGroup(g: { title: string; fields: FieldState[] }) {
 }
 
 // ====== 批量寄存器读取（0xFA，固件单帧上限 95 寄存器，按段拆分）======
-// 读取全部：把 0~183 共 184 个寄存器按 MAX_READ_REGS 切段，每段发一条 0xFA 读指令，
-// 全部应答收齐后填入 rawMap，再逐字段回填 UI。相比逐单元串行读，往返次数从约 30 降到 2。
-const MAX_READ_REGS = 95
-const BATCH_TIMEOUT = 3000
+// 读取全部：逐寄存器单条 0xFA 读（单条读已验证可靠），把结果填入 rawMap 后再逐字段回填。
+// 注意：固件对单帧多寄存器批量读（count>1）支持不稳，曾出现整段失败导致全部字段标红，
+// 故这里改用逐寄存器读，复用与 readField 完全一致的解析路径（parseParamResponse）。
+const READ_TIMEOUT = 1500
 
-/** 字段依赖的寄存器序号集合（用于分段容错：某段失败时只标红该段覆盖的字段） */
+/** 字段依赖的寄存器序号集合（用于按寄存器去重读取 / 失败定位） */
 function fieldRegisters(f: FieldState): number[] {
   if (isBitSwitch(f)) return [f.bitIndex!]
   if (f.ascii) {
@@ -1299,49 +1299,41 @@ async function readAll() {
   if (!props.connected) return
   busy.value = true
   progress.value = 0
-  // 参数序号表 0~183，共 184 个寄存器；固件单帧最多读 95 个，故拆 2 段。
-  const maxIdx = PARAM_TABLE[PARAM_TABLE.length - 1].index
-  const total = maxIdx + 1
+  // 收集所有字段实际依赖的寄存器（去重），逐寄存器单条读取，避免批量读被固件拒绝。
+  const regSet = new Set<number>()
+  for (const f of allFields.value) {
+    if (f.customDisplay && f.customDisplay !== 'date' && f.customDisplay !== 'serialRaw') continue
+    if (f.readOnly && f.index === undefined) continue
+    for (const r of fieldRegisters(f)) regSet.add(r)
+  }
+  const regs = [...regSet].sort((a, b) => a - b)
   const rawMap: Record<number, number> = {}
   const failedRegs = new Set<number>()
-  const chunks: { start: number; count: number }[] = []
-  for (let s = 0; s < total; s += MAX_READ_REGS) {
-    chunks.push({ start: s, count: Math.min(MAX_READ_REGS, total - s) })
+  let done = 0
+  for (const reg of regs) {
+    progress.value = Math.round((done / regs.length) * 100)
+    jbdBus.send(buildReadParam(reg, 1))
+    const resp = await jbdBus.onceResponse(READ_TIMEOUT, 0xfa)
+    const raw = parseParamResponse(resp)
+    if (raw === null) failedRegs.add(reg)
+    else rawMap[reg] = raw
+    done++
   }
-  let chunkIdx = 0
-  for (const ch of chunks) {
-    progress.value = Math.round((chunkIdx / chunks.length) * 100)
-    jbdBus.send(buildReadParam(ch.start, ch.count))
-    const resp = await jbdBus.onceResponse(BATCH_TIMEOUT, 0xfa)
-    if (!resp || resp.timeout || resp.status !== 0x00 || resp.cmd !== 0xfa) {
-      ElMessage.warning(`批量读取失败：寄存器 ${ch.start}~${ch.start + ch.count - 1}（${resp?.timeout ? '超时' : `0x${resp?.status?.toString(16)}`}）`)
-      for (let r = ch.start; r < ch.start + ch.count; r++) failedRegs.add(r)
-    } else if (resp.data && resp.data.length >= 3) {
-      const startReg = (resp.data[0] << 8) | resp.data[1]
-      const cnt = resp.data[2]
-      for (let i = 0; i < cnt; i++) {
-        const off = 3 + i * 2
-        if (off + 1 >= resp.data.length) break
-        rawMap[startReg + i] = ((resp.data[off] << 8) | resp.data[off + 1]) & 0xffff
-      }
-    }
-    chunkIdx++
-  }
-  // 逐字段回填，分段容错：仅依赖失败段的字段标红，其余照常更新
+  // 逐字段回填：仅依赖失败寄存器的字段标红，其余照常更新
   let ok = 0, fail = 0
   for (const f of allFields.value) {
     const canReadCustomDisplay = f.customDisplay === 'date' || f.customDisplay === 'serialRaw'
     if (f.customDisplay && !canReadCustomDisplay) continue // 派生展示（芯片类型/硬件版本/NTC 数/均衡模式），不参与 0xFA 读
     if (f.readOnly && f.index === undefined) continue
-    const regs = fieldRegisters(f)
-    if (regs.some((r) => failedRegs.has(r))) { f.status = 'fail'; fail++; continue }
+    const fr = fieldRegisters(f)
+    if (fr.some((r) => failedRegs.has(r))) { f.status = 'fail'; fail++; continue }
     if (applyFieldFromRaw(f, rawMap)) ok++
     else { f.status = 'fail'; fail++ }
   }
   progress.value = 100
   busy.value = false
-  if (fail) ElMessage.warning(`全部读取完成：${ok} 成功，${fail} 失败（分段容错，仅失败段标红）`)
-  else ElMessage.success(`全部读取成功（${chunks.length} 条批量指令）`)
+  if (fail) ElMessage.warning(`全部读取完成：${ok} 成功，${fail} 失败（逐寄存器容错，仅失败寄存器标红）`)
+  else ElMessage.success(`全部读取成功（${regs.length} 个寄存器）`)
 }
 
 async function writeAll() {
