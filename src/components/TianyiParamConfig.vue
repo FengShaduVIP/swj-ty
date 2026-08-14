@@ -4,12 +4,17 @@
       <div class="tpc-title">天一 BMS 参数下发</div>
       <div class="tpc-actions">
         <span class="tpc-proto">Modbus-RTU · 从机 0x{{ slaveHex }}</span>
-        <button class="btn" :disabled="!connected || reading" @click="loadGroup(activeTab)">
+        <button class="btn" :disabled="!connected || reading || readingAll" @click="loadAll">
+          {{ readingAll ? '读取全部中…' : '读取全部' }}
+        </button>
+        <button class="btn" :disabled="!connected || reading || readingAll" @click="loadGroup(activeTab)">
           {{ reading ? '读取中…' : '读取当前' }}
         </button>
-        <button class="btn btn-primary" :disabled="!connected || writing || dirtyCount(activeTab) === 0" @click="writeAll">
+        <span class="tpc-sep" />
+        <button class="btn btn-primary" :disabled="!connected || writing || readingAll || dirtyCount(activeTab) === 0" @click="writeAll">
           写入全部已修改 ({{ dirtyCount(activeTab) }})
         </button>
+        <span class="tpc-sep" />
         <button class="btn" @click="fileInput?.click()">导入</button>
         <button class="btn" @click="exportConfig">导出</button>
         <button class="btn" @click="saveAsTemplate">存为模板</button>
@@ -168,35 +173,66 @@ function dirtyCount(group: TianyiGroup): number {
   return paramsOf(group).filter((d) => isDirty(d)).length
 }
 
-// ===== 读取整组 =====
+// ===== 读取整组（内部，不含 loading 标记）=====
+async function readGroupInternal(group: TianyiGroup): Promise<boolean> {
+  if (group === 'control') return false
+  const range = GROUP_READ[group]
+  if (!range) return false
+  const frame = await tianyiBus.sendAck(buildReadHoldingRegisters(slave.value, range.start, range.count))
+  if (frame.timeout || frame.exception) {
+    ElMessage.error(`读取 ${group} 失败：${frame.timeout ? '超时无响应' : '设备异常应答 0x' + (frame.exceptionCode ?? 0).toString(16)}`)
+    return false
+  }
+  const defs = paramsOf(group)
+  for (const def of defs) {
+    const idx = def.reg - range.start
+    if (idx < 0) continue
+    const byteOff = idx * 2
+    if (byteOff + 1 >= frame.data.length) continue
+    const raw = readU16(frame.data, byteOff)
+    rawMap[def.reg] = raw
+    editMap[def.reg] = formatDisplay(def, raw)
+    statusMap[def.reg] = ''
+  }
+  return true
+}
+
+// 读取当前页（按页签）
 async function loadGroup(group: TianyiGroup) {
   if (!props.connected) { ElMessage.warning('请先连接串口'); return }
-  if (group === 'control') return
-  const range = GROUP_READ[group]
-  if (!range) return
   reading.value = true
   try {
-    const frame = await tianyiBus.sendAck(buildReadHoldingRegisters(slave.value, range.start, range.count))
-    if (frame.timeout || frame.exception) {
-      ElMessage.error(`读取失败：${frame.timeout ? '超时无响应' : '设备异常应答 0x' + (frame.exceptionCode ?? 0).toString(16)}`)
-      return
-    }
-    const defs = paramsOf(group)
-    for (const def of defs) {
-      const idx = def.reg - range.start
-      if (idx < 0) continue
-      const byteOff = idx * 2
-      if (byteOff + 1 >= frame.data.length) continue
-      const raw = readU16(frame.data, byteOff)
-      rawMap[def.reg] = raw
-      editMap[def.reg] = formatDisplay(def, raw)
-      statusMap[def.reg] = ''
-    }
-    ElMessage.success(`已读取 ${group} 区 ${defs.length} 项`)
+    const ok = await readGroupInternal(group)
+    if (ok) ElMessage.success(`已读取 ${group} 区 ${paramsOf(group).length} 项`)
   } catch (e: any) {
     ElMessage.error('读取异常：' + (e?.message || e))
   } finally {
     reading.value = false
+  }
+}
+
+// 读取全部（配置/保护/校准/休眠 四组顺序读取，复用总线 500ms 间隔）
+const readingAll = ref(false)
+async function loadAll() {
+  if (!props.connected) { ElMessage.warning('请先连接串口'); return }
+  if (readingAll.value) return
+  readingAll.value = true
+  const groups: TianyiGroup[] = ['config', 'protect', 'calib', 'sleep']
+  let okCount = 0
+  try {
+    for (const g of groups) {
+      const ok = await readGroupInternal(g)
+      if (ok) okCount++
+    }
+    if (okCount === groups.length) {
+      ElMessage.success(`已读取全部 ${okCount} 组参数（共 ${PARAM_DEFS.filter((d) => d.group !== 'control').length} 项）`)
+    } else {
+      ElMessage.warning(`读取完成：成功 ${okCount}/${groups.length} 组`)
+    }
+  } catch (e: any) {
+    ElMessage.error('读取全部异常：' + (e?.message || e))
+  } finally {
+    readingAll.value = false
   }
 }
 
@@ -515,6 +551,7 @@ watch(() => props.connected, (c) => { if (c) loadGroup(activeTab.value) })
 .tpc-title { font-size: var(--fs-h3); font-weight: var(--fw-semibold); color: var(--text-primary); }
 .tpc-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .tpc-proto { font-size: var(--fs-caption); color: var(--text-tertiary); font-family: var(--font-mono); }
+.tpc-sep { width: 1px; height: 20px; background: var(--border-default); margin: 0 var(--space-1); }
 
 .tpc-offline {
   padding: var(--space-3) var(--space-4);
