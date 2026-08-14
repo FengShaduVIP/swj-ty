@@ -39,6 +39,9 @@ class JbdBus {
   private listeners = new Set<FrameListener>()
   private onceResolvers: ((frame: Frame) => void)[] = []
   private sender: ((frame: number[]) => void) | null = null
+  /** 底层串口是否处于可发送状态（由 App 在连接态变更时设置）。
+   *  未就绪时 pump 立即把在途 job 判为超时释放，避免断线后队列阻塞等待 1.5s 应答。 */
+  private senderReady = false
 
   // ===== 命令串行化队列（方案1：单条在途锁）=====
   private outQueue: QueueJob[] = []
@@ -75,6 +78,11 @@ class JbdBus {
     this.sender = fn
   }
 
+  /** App 通知底层串口连接状态，用于断线时立即释放发送队列 */
+  setConnected(ready: boolean): void {
+    this.senderReady = ready
+  }
+
   // ===== 串行队列实现 =====
   private enqueue(frame: number[], expectedCmd: number, timeoutMs = DEFAULT_ACK_TIMEOUT): Promise<Frame> {
     return new Promise((resolve) => {
@@ -92,7 +100,8 @@ class JbdBus {
     if (this.busy) return
     const job = this.outQueue.shift()
     if (!job) return
-    if (!this.sender) {
+    if (!this.sender || !this.senderReady) {
+      // 未注册发送器或底层串口已断开：立即以超时帧释放，避免在途锁卡住后续帧
       job.resolve(TIMEOUT_FRAME())
       this.pump()
       return
@@ -156,9 +165,10 @@ class JbdBus {
     })
   }
 
-  /** 清空订阅与缓冲（组件卸载 / 重连时调用，避免 HMR 或重连的残留） */
+  /** 清空缓冲与一次性订阅（组件卸载 / 重连时调用，避免残留）。
+   *  注意：刻意【不清】常驻 onFrame 监听（如 useJbd 的单例帧订阅），
+   *  否则重连/清空后实时数据订阅会静默丢失且无法自动恢复。 */
   clear(): void {
-    this.listeners.clear()
     this.onceResolvers = []
     this.outQueue = []
     this.busy = false

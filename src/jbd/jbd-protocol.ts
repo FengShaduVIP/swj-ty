@@ -104,6 +104,51 @@ export function buildWrite(reg: number, data: number[], cbId?: number[]): number
   return frame
 }
 
+// ============================ 指令说明（通信日志用）============================
+// 控制指令功能码 → 名称（反向查表）
+const CONTROL_FUNC_NAME: Record<string, string> = {}
+for (const [k, v] of Object.entries(CONTROL_FUNC)) {
+  CONTROL_FUNC_NAME[`${v[0]},${v[1]}`] = k
+}
+
+/** 根据帧生成可读的中文指令说明，用于通信日志的下发条目。
+ *  无法识别的帧返回空串，调用方回退到普通“发送: <hex>”。 */
+export function describeFrame(frame: number[]): string {
+  if (!frame || frame.length < 5 || frame[0] !== FRAME_START) return ''
+  const isRead = frame[1] === FLAG_READ
+  const isWrite = frame[1] === FLAG_WRITE
+  const cmd = frame[2] & 0xff
+  const dir = isRead ? '读取' : isWrite ? '写入' : ''
+
+  switch (cmd) {
+    case 0x00: return isWrite ? '进入工厂模式' : '读取芯片类型'
+    case 0x01: return '退出工厂模式'
+    case 0x03: return '读取基本信息'
+    case 0x04: return '读取单体电压'
+    case 0x05: return '读取硬件版本'
+    case 0x06: return '蓝牙密码配对'
+    case 0x07: return '修改蓝牙密码'
+    case 0x0a: {
+      const name = CONTROL_FUNC_NAME[`${frame[3] ?? 0},${frame[4] ?? 0}`]
+      return name ? `控制指令(${name})` : '控制指令'
+    }
+    case 0x0b: return '工厂模式密码'
+    case 0xaa: return '读取保护次数'
+    case 0xa2: return '设置蓝牙名称'
+    case 0xf6: return '写入内阻'
+    case 0xfb: return 'MOS 控制'
+    case 0xfc: return '加热控制'
+    case 0xfa: {
+      const reg = ((frame[4] ?? 0) << 8) | (frame[5] ?? 0)
+      return `${dir}参数(寄存器 ${reg})`
+    }
+    default:
+      return isWrite
+        ? `写入指令(0x${cmd.toString(16).toUpperCase().padStart(2, '0')})`
+        : `读取指令(0x${cmd.toString(16).toUpperCase().padStart(2, '0')})`
+  }
+}
+
 // ============================ 帧解析 ============================
 export interface Frame {
   cmd: number
@@ -167,14 +212,16 @@ export function buildWriteParam(reg: number, values: number[]): number[] {
   const count = values.length / 2
   return buildWrite(CMD.PARAM, [(reg >> 8) & 0xff, reg & 0xff, count & 0xff, ...values])
 }
-// 蓝牙名称专用修改指令：DD 5A A2 <len> 0A <nameBytes> <chk> 77
-// 0x0A 为固定前缀子命令；校验沿用 JBD 的 calcChecksum（非 CRC16）。
-// 仅下发蓝牙名称时使用；读取蓝牙名称仍走 0xFA 参数寄存器 88~103（见 JbdParamConfig）。
+// 蓝牙名称专用修改指令：DD 5A A2 <len> <nameBytes> <chk> 77
+// 首字节 <len> = 蓝牙名称的长度（UTF-8 字节数）。以 "V3--F80722" 为例长度为 10 → 0x0A，
+// 此前写死的 0x0a 只在该名称恰好 10 字节时正确，名称长度变化即错位，故改为动态长度。
+// 名称按 UTF-8 编码下发（ASCII 与旧行为逐字节一致；中文等不再被 &0xff 截断）。
+// 校验沿用 JBD 的 calcChecksum（非 CRC16）。读取蓝牙名称仍走 0xFA 参数寄存器 88~103（见 JbdParamConfig）。
 export function buildSetBtName(name: string): number[] {
-  const bytes: number[] = [0x0a]
   const str = String(name ?? '')
-  for (let i = 0; i < str.length; i++) bytes.push(str.charCodeAt(i) & 0xff)
-  return buildWrite(0xa2, bytes)
+  const nameBytes = Array.from(new TextEncoder().encode(str))
+  const len = nameBytes.length & 0xff
+  return buildWrite(0xa2, [len, ...nameBytes])
 }
 export function buildBtPair(password: number[]): number[] {
   return buildWrite(CMD.BT_PAIR, [0x06, ...password.map((d) => d & 0xff)])

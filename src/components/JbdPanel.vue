@@ -251,8 +251,8 @@ function tempBarClass(t: number): string {
   return 'tb--ok'
 }
 
-// ===== 自动轮询（沿用 store 单例 interval）=====
-j.onPollChange(false) // 默认未开启
+// ===== 自动轮询（沿用 useJbd 单例 pollTimer，默认开启）=====
+j.onPollChange(true) // 默认开启自动轮询
 function onPollChange(v: boolean | string | number) {
   j.onPollChange(!!v)
 }
@@ -281,21 +281,30 @@ function refreshAll() {
   lastPoll.value = now.toLocaleTimeString('zh-CN', { hour12: false })
 }
 
-// 启动时拉一帧（连接好的话）；挂载/卸载接管 interval 监听
+// 启动时拉一帧（连接好的话）；挂载/卸载接管轮询生命周期
 const now = new Date()
 let mountedAt = ''
 mountedAt = now.toLocaleTimeString('zh-CN', { hour12: false })
-function onConnChange() {
-  if (connected.value) refreshAll()
-}
-let connWatcher: ReturnType<typeof setInterval> | null = null
+// 连接状态变化时：
+//  - 恢复连接：立刻拉一帧（连接建立那一刻），并交由 useJbd 的 pollTimer 接管后续 2s 轮询；
+//  - 断开：停止轮询（restartPoll 在断开态下会自动清空定时器）。
+// 注意：不再使用常驻 1.5s interval，避免与 useJbd 自动轮询双重下发、总线拥挤。
+watch(connected, (v) => {
+  if (v) {
+    refreshAll()
+    j.restartPoll()
+    scheduleProtectRead()
+  } else {
+    j.restartPoll()
+    if (protTimer) { clearInterval(protTimer); protTimer = null }
+  }
+})
 onMounted(() => {
   refreshAll()
-  connWatcher = setInterval(onConnChange, 1500)
+  if (connected.value) { j.restartPoll(); scheduleProtectRead() }
 })
 onUnmounted(() => {
   j.onPollChange(false)
-  if (connWatcher) clearInterval(connWatcher)
   if (protTimer) clearInterval(protTimer)
 })
 </script>

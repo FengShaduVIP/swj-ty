@@ -117,6 +117,7 @@
       width="560px"
       align-center
       class="vg-dialog"
+      @close="onSettingsClose"
     >
       <div class="set-row">
         <div>
@@ -124,6 +125,46 @@
           <div class="set-desc">紧凑：缩小卡片内边距与控件高度，适配产线远距离查看</div>
         </div>
         <el-segmented v-model="compact" :options="[{ label: '标准', value: false }, { label: '紧凑', value: true }]" />
+      </div>
+      <el-divider />
+      <div class="set-row set-row--col">
+        <div class="set-head">
+          <div>
+            <div class="set-name">USB 自动连接</div>
+            <div class="set-desc">检测到匹配的 USB 串口设备（按 VID/PID）时自动连接，并在收到 BMS 应答后跳转到实时监测页。需设备已安装串口驱动（CH340/CP210x/FTDI 等）。</div>
+          </div>
+          <el-switch v-model="autoconn.enabled" />
+        </div>
+        <div v-if="autoconn.enabled" class="set-grid">
+          <div class="set-field">
+            <label>厂商ID (VID)</label>
+            <el-input v-model="autoconn.vendorId" placeholder="如 1A86" />
+          </div>
+          <div class="set-field">
+            <label>产品ID (PID)</label>
+            <el-input v-model="autoconn.productId" placeholder="如 7523" />
+          </div>
+          <div class="set-field">
+            <label>名称关键字</label>
+            <el-input v-model="autoconn.friendlyName" placeholder="可选，如 CH340" />
+          </div>
+          <div class="set-field">
+            <label>波特率</label>
+            <el-select v-model="autoconn.baudRate" :options="BAUD_OPTIONS.map(b => ({ label: b, value: b }))" />
+          </div>
+          <div class="set-field">
+            <label>数据位</label>
+            <el-select v-model="autoconn.dataBits" :options="DATABIT_OPTIONS.map(d => ({ label: d, value: d }))" />
+          </div>
+          <div class="set-field">
+            <label>停止位</label>
+            <el-select v-model="autoconn.stopBits" :options="STOPBIT_OPTIONS.map(s => ({ label: String(s), value: s }))" />
+          </div>
+          <div class="set-field">
+            <label>校验位</label>
+            <el-select v-model="autoconn.parity" :options="PARITY_OPTIONS" />
+          </div>
+        </div>
       </div>
       <el-divider />
       <div class="about">
@@ -139,7 +180,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, markRaw } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, markRaw } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Connection, DataBoard, Files, Setting, Fold, Expand, Operation, Tools } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
@@ -150,6 +191,8 @@ import JbdParamConfig from './components/JbdParamConfig.vue'
 import ConnIndicator from './components/ConnIndicator.vue'
 import { ui, setConnected, setConnecting, setDisconnected, markCommError } from './store'
 import { jbdBus } from './jbd/jbd-bus'
+import { describeFrame } from './jbd/jbd-protocol'
+import { useJbd } from './jbd/useJbd'
 import pkg from '../package.json'
 
 const version = (pkg as any).version || '1.0.0'
@@ -239,17 +282,117 @@ async function handleRefreshPorts(): Promise<SerialPortInfo[]> {
 }
 
 async function handleSend(data: number[]) {
+  // 最终防线：若连接已断开，直接丢弃，不再调用底层 send 抛错污染日志。
+  // 因为轮询器/自动连接的状态同步存在微小竞态，可能在本帧仍认为已连接。
+  if (!connected.value) return
   try {
     await window.serialAPI.send(data)
     const hex = data.map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
-    addLog('send', `发送: ${hex}`)
+    const desc = describeFrame(data)
+    const prefix = desc ? `${desc}-->主机发送：` : '发送: '
+    addLog('send', `${prefix}${hex}`)
   } catch (err: any) {
-    ElMessage.error('发送失败: ' + (err.message || err))
-    addLog('error', `发送失败: ${err.message || err}`)
+    const msg = err?.message || String(err)
+    // 已明确是"未连接"类的异常时，不再重复报红；其它真实发送错误仍保留。
+    if (msg.includes('未连接') || msg.includes('Serial port not open') || msg.includes('Closed')) {
+      addLog('info', `发送忽略: ${msg}`)
+      return
+    }
+    ElMessage.error('发送失败: ' + msg)
+    addLog('error', `发送失败: ${msg}`)
   }
 }
 
 function goMonitor() { active.value = 'monitor' }
+
+// ===== 自动连接配置（持久化 + VID/PID 匹配）=====
+const AUTO_KEY = 'vg_autoconnect'
+interface AutoCfg {
+  enabled: boolean
+  vendorId: string
+  productId: string
+  friendlyName: string
+  baudRate: number
+  dataBits: 5 | 6 | 7 | 8
+  stopBits: 1 | 1.5 | 2
+  parity: 'none' | 'even' | 'odd' | 'mark' | 'space'
+}
+const BAUD_OPTIONS = [9600, 19200, 38400, 57600, 115200]
+const DATABIT_OPTIONS: (5 | 6 | 7 | 8)[] = [7, 8]
+const STOPBIT_OPTIONS: (1 | 1.5 | 2)[] = [1, 1.5, 2]
+const PARITY_OPTIONS: { label: string; value: AutoCfg['parity'] }[] = [
+  { label: '无 (None)', value: 'none' },
+  { label: '偶校验 (Even)', value: 'even' },
+  { label: '奇校验 (Odd)', value: 'odd' },
+]
+const defaultAuto: AutoCfg = { enabled: false, vendorId: '', productId: '', friendlyName: '', baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none' }
+function loadAuto(): AutoCfg {
+  try {
+    const saved = JSON.parse(localStorage.getItem(AUTO_KEY) || '{}')
+    return { ...defaultAuto, ...saved }
+  } catch {
+    return { ...defaultAuto }
+  }
+}
+const autoconn = ref<AutoCfg>(loadAuto())
+
+function saveAuto() { localStorage.setItem(AUTO_KEY, JSON.stringify(autoconn.value)) }
+function applyAutoConnect() {
+  if (autoconn.value.enabled) {
+    window.serialAPI?.setAutoConnect?.(true, { ...autoconn.value })
+  } else {
+    window.serialAPI?.setAutoConnect?.(false)
+  }
+}
+function onSettingsClose() {
+  saveAuto()
+  applyAutoConnect()
+}
+
+// ===== 连接成功后验证 BMS 应答再跳转实时监测页 =====
+const { basicInfo, readBasic } = useJbd()
+const pendingVerify = ref(false)
+const pendingJump = ref(false)
+let verifyTimer: ReturnType<typeof setTimeout> | null = null
+
+function startVerify(autoJump = false) {
+  pendingVerify.value = true
+  pendingJump.value = autoJump
+  readBasic() // 发 0x03 读基本信息，验证确为 BMS 设备
+  if (verifyTimer) clearTimeout(verifyTimer)
+  verifyTimer = setTimeout(() => {
+    if (pendingVerify.value) {
+      pendingVerify.value = false
+      pendingJump.value = false
+      ElMessage.warning('串口已打开，但未收到 BMS 应答，请确认设备与串口参数')
+    }
+  }, 3000)
+}
+watch(basicInfo, (v) => {
+  if (v && pendingVerify.value) {
+    pendingVerify.value = false
+    const shouldJump = pendingJump.value
+    pendingJump.value = false
+    if (verifyTimer) { clearTimeout(verifyTimer); verifyTimer = null }
+    // 仅自动连接成功才自动跳转到实时监测页；手动连接只验证、停留当前页
+    if (shouldJump) active.value = 'monitor'
+  }
+})
+
+function handleStatusChange(status: SerialStatus) {
+  if (status.connected) {
+    portPath.value = status.portPath || ''
+    setConnected(status.portPath || '', ui.baudRate)
+    jbdBus.setConnected(true)
+    // 仅自动连接成功才验证后跳转；手动连接只验证、不跳转
+    startVerify(!!status.auto)
+  } else {
+    setDisconnected()
+    jbdBus.setConnected(false)
+    pendingVerify.value = false
+    pendingJump.value = false
+  }
+}
 
 // ===== 顶部状态栏关键读数（来自 store.ui.live）=====
 const readouts = computed(() => {
@@ -290,6 +433,8 @@ onMounted(() => {
   window.addEventListener('keydown', onKey)
   tickTimer = window.setInterval(tick, 1000)
   tick()
+  // 启用自动连接时先停留在「设备连接」页，连接验证成功后再跳转到实时监测页
+  if (autoconn.value.enabled) active.value = 'connect'
   // 关键：把帧总线接到真实串口。否则 jbdBus.send/sendAck 发现 sender 为 null，
   // 会立即返回超时帧，表现为「发送数据没有成功 / 读不到应答」。
   jbdBus.setSender(handleSend)
@@ -306,9 +451,11 @@ onMounted(() => {
     markCommError()
   })
   window.serialAPI?.onStatusChange?.((status: SerialStatus) => {
-    if (status.connected) { portPath.value = status.portPath || ''; setConnected(status.portPath || '', ui.baudRate) }
-    else setDisconnected()
+    handleStatusChange(status)
   })
+
+  // 按持久化的配置启动自动连接（若启用），在监听器就绪后再开启
+  applyAutoConnect()
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', onKey)
@@ -469,4 +616,16 @@ onUnmounted(() => {
 }
 .ft-center { margin-left: auto; }
 .ft-right { color: var(--text-tertiary); }
+
+/* ---------- 自动连接设置 ---------- */
+.set-row--col { flex-direction: column; align-items: stretch; gap: var(--space-4); }
+.set-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
+.set-head .set-desc { max-width: 420px; }
+.set-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-4);
+  padding: var(--space-4); background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+}
+.set-field { display: flex; flex-direction: column; gap: var(--space-2); }
+.set-field label { font-size: var(--fs-caption); color: var(--text-secondary); font-weight: var(--fw-medium); }
 </style>

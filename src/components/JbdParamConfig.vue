@@ -462,17 +462,18 @@ function parseAsciiResponse(resp: any, maxBytes: number): string {
   // 顺序取字节：data[3]=v0H, data[4]=v0L, data[5]=v1H, data[6]=v1L ...
   const total = Math.min(count * 2, maxBytes)
   const bytes = data.slice(3, 3 + total)
-  // 第一字节为字符串长度（字符数），剩余字节中按该长度取字符
-  const len = bytes[0]
+  // 第一字节为字符串长度（UTF-8 字节数），后续字节为名称的 UTF-8 编码
+  const len = bytes[0] & 0xff
+  const decoder = new TextDecoder('utf-8', { fatal: false })
+  let text: string
   if (len > 0 && len < bytes.length) {
-    return String.fromCharCode(...bytes.slice(1, 1 + len))
-      .replace(/[^\x20-\x7E]/g, '')
-      .trim()
+    text = decoder.decode(new Uint8Array(bytes.slice(1, 1 + len)))
+  } else {
+    // 无长度字节或长度为 0：把后续所有字节当字符串解码
+    text = decoder.decode(new Uint8Array(bytes.slice(1)))
   }
-  // 无长度字节或长度为 0：把后续所有可打印字节当字符串
-  return String.fromCharCode(...bytes.slice(1))
-    .replace(/[^\x20-\x7E]/g, '')
-    .trim()
+  // 仅剔除控制字符（保留可打印 ASCII、CJK 等多字节字符）
+  return text.replace(/[\u0000-\u001F\u007F]/g, '').trim()
 }
 
 // ====== 位开关共享位图 ======
@@ -1080,6 +1081,14 @@ async function readField(f: FieldState): Promise<boolean> {
   return true
 }
 
+/** 单个参数下发成功后：标记状态并弹出成功提示 */
+function markWriteOk(f: FieldState): true {
+  f.status = 'ok'
+  f.dirty = false
+  ElMessage.success(`写参数[${f.label}]成功`)
+  return true
+}
+
 async function writeField(f: FieldState): Promise<boolean> {
   if (!canWrite(f)) return false
   f.status = 'writing'
@@ -1099,9 +1108,7 @@ async function writeField(f: FieldState): Promise<boolean> {
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
         return false
       }
-      f.status = 'ok'
-      f.dirty = false
-      return true
+      return markWriteOk(f)
     }
     const bytes = encodeAsciiValue(f)
     jbdBus.send(buildWriteParam(f.index!, bytes))
@@ -1112,9 +1119,7 @@ async function writeField(f: FieldState): Promise<boolean> {
       ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       return false
     }
-    f.status = 'ok'
-    f.dirty = false
-    return true
+    return markWriteOk(f)
   }
   // 复合保护字段（scd）：与 peer 合并成 16 位字再下发
   if (f.kind === 'scd') {
@@ -1132,10 +1137,8 @@ async function writeField(f: FieldState): Promise<boolean> {
       ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       return false
     }
-    f.status = 'ok'
-    f.dirty = false
     if (peer) { peer.status = 'ok'; peer.dirty = false }
-    return true
+    return markWriteOk(f)
   }
   // 下拉选项字段：value 即原始寄存器值，直接下发
   if (f.options) {
@@ -1148,9 +1151,7 @@ async function writeField(f: FieldState): Promise<boolean> {
       ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       return false
     }
-    f.status = 'ok'
-    f.dirty = false
-    return true
+    return markWriteOk(f)
   }
   // 普通数值字段
   // 检流阻值等需密码校验：先弹窗确认，密码不正确则中止下发
@@ -1171,9 +1172,7 @@ async function writeField(f: FieldState): Promise<boolean> {
     ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
     return false
   }
-  f.status = 'ok'
-  f.dirty = false
-  return true
+  return markWriteOk(f)
 }
 
 // 计算去重后的「读取单元」：位开关共用同一寄存器（按 bitIndex 去重）、
@@ -1210,11 +1209,13 @@ async function readGroup(g: { title: string; fields: FieldState[] }) {
   ElMessage[fail ? 'warning' : 'success'](`本组读取完成：${ok} 成功，${fail} 失败${tip}`)
 }
 
-// ====== 批量寄存器读取（0xFA，固件单帧上限 95 寄存器，按段拆分）======
-// 读取全部：逐寄存器单条 0xFA 读（单条读已验证可靠），把结果填入 rawMap 后再逐字段回填。
-// 注意：固件对单帧多寄存器批量读（count>1）支持不稳，曾出现整段失败导致全部字段标红，
-// 故这里改用逐寄存器读，复用与 readField 完全一致的解析路径（parseParamResponse）。
+// ====== 批量寄存器读取（0xFA，设备单帧读取上限约 56 寄存器，按连续段拆分）======
+// 读取全部：把"实际用到的寄存器"按连续段（run）合并，每段最多 READ_CHUNK 个做一条 0xFA 批量读，
+// 串口往返从逐寄存器(~150)降到个位数；若某段批量读失败（设备对较大 count 不稳），自动回退为该段内
+// 逐寄存器单条读（parseParamResponse），兼顾速度与可靠性。两条路径均复用 readField 一致的解析。
+// 实测：寄存器 0~55（count=56）单条批量读正常，故 READ_CHUNK 取 48（留余量，避免逼近设备上限）。
 const READ_TIMEOUT = 1500
+const READ_CHUNK = 48
 
 /** 字段依赖的寄存器序号集合（用于按寄存器去重读取 / 失败定位） */
 function fieldRegisters(f: FieldState): number[] {
@@ -1295,28 +1296,73 @@ function applyFieldFromRaw(f: FieldState, rawMap: Record<number, number>): boole
   return true
 }
 
+/** 解析批量读响应：data = [startRegHi, startRegLo, count, v0Hi, v0Lo, ...]，
+ * 校验 startReg/count 与请求一致后返回 startReg→raw 映射，否则返回 null（交由回退逻辑处理）。 */
+function parseBatchResponse(resp: any, expectStart: number, expectCount: number): Record<number, number> | null {
+  if (!resp || resp.timeout || resp.status !== 0x00 || resp.cmd !== 0xfa) return null
+  if (!resp.data || resp.data.length < 3 + expectCount * 2) return null
+  const startReg = (resp.data[0] << 8) | resp.data[1]
+  const cnt = resp.data[2]
+  if (startReg !== expectStart || cnt !== expectCount) return null
+  const map: Record<number, number> = {}
+  for (let i = 0; i < cnt; i++) {
+    const off = 3 + i * 2
+    map[startReg + i] = ((resp.data[off] << 8) | resp.data[off + 1]) & 0xffff
+  }
+  return map
+}
+
 async function readAll() {
   if (!props.connected) return
   busy.value = true
   progress.value = 0
-  // 收集所有字段实际依赖的寄存器（去重），逐寄存器单条读取，避免批量读被固件拒绝。
+  // 收集所有字段实际依赖的寄存器（去重）
   const regSet = new Set<number>()
   for (const f of allFields.value) {
     if (f.customDisplay && f.customDisplay !== 'date' && f.customDisplay !== 'serialRaw') continue
     if (f.readOnly && f.index === undefined) continue
     for (const r of fieldRegisters(f)) regSet.add(r)
   }
-  const regs = [...regSet].sort((a, b) => a - b)
+  if (!regSet.size) { busy.value = false; ElMessage.warning('没有可读取的参数'); return }
   const rawMap: Record<number, number> = {}
   const failedRegs = new Set<number>()
+  // 仅读取实际用到的寄存器：先把去重后的寄存器按连续段（run）合并，再在每个 run 内按
+  // READ_CHUNK 切分，每段一条批量 0xFA 读。这样既不读无关/可能无效的寄存器，又能吃满批量读。
+  const regs = [...regSet].sort((a, b) => a - b)
+  const chunks: { start: number; count: number }[] = []
+  let i = 0
+  while (i < regs.length) {
+    let j = i + 1
+    while (j < regs.length && regs[j] === regs[j - 1] + 1) j++
+    const runStart = regs[i]
+    const runLen = j - i
+    for (let s = runStart; s < runStart + runLen; s += READ_CHUNK) {
+      chunks.push({ start: s, count: Math.min(READ_CHUNK, runStart + runLen - s) })
+    }
+    i = j
+  }
   let done = 0
-  for (const reg of regs) {
-    progress.value = Math.round((done / regs.length) * 100)
-    jbdBus.send(buildReadParam(reg, 1))
+  let batchHits = 0, fallbackChunks = 0
+  for (const ch of chunks) {
+    progress.value = Math.round((done / chunks.length) * 100)
+    // 1) 尝试批量读：一次往返拿 READ_CHUNK 个寄存器
+    jbdBus.send(buildReadParam(ch.start, ch.count))
     const resp = await jbdBus.onceResponse(READ_TIMEOUT, 0xfa)
-    const raw = parseParamResponse(resp)
-    if (raw === null) failedRegs.add(reg)
-    else rawMap[reg] = raw
+    const batch = parseBatchResponse(resp, ch.start, ch.count)
+    if (batch) {
+      Object.assign(rawMap, batch)
+      batchHits++
+    } else {
+      // 2) 回退：该块内逐寄存器单条读（与 readField 一致、已验证可靠）
+      fallbackChunks++
+      for (let r = ch.start; r < ch.start + ch.count; r++) {
+        jbdBus.send(buildReadParam(r, 1))
+        const rr = await jbdBus.onceResponse(READ_TIMEOUT, 0xfa)
+        const raw = parseParamResponse(rr)
+        if (raw === null) failedRegs.add(r)
+        else rawMap[r] = raw
+      }
+    }
     done++
   }
   // 逐字段回填：仅依赖失败寄存器的字段标红，其余照常更新
@@ -1332,8 +1378,8 @@ async function readAll() {
   }
   progress.value = 100
   busy.value = false
-  if (fail) ElMessage.warning(`全部读取完成：${ok} 成功，${fail} 失败（逐寄存器容错，仅失败寄存器标红）`)
-  else ElMessage.success(`全部读取成功（${regs.length} 个寄存器）`)
+  if (fail) ElMessage.warning(`读取全部失败：${fail} 个参数读取失败`)
+  else ElMessage.success('读取全部成功')
 }
 
 async function writeAll() {
@@ -1506,6 +1552,7 @@ function applyImport(data: any) {
   if (!Array.isArray(rawList)) { ElMessage.error('配置文件格式不支持（需为 JBD 参数 JSON）'); return }
   const out: ImportedParam[] = []
   let skipped = 0
+  const appliedFields = new Set<FieldState>() // 防止 SCD 同寄存器重复回填
   for (const item of rawList) {
     const index = Number(item?.index ?? item?.reg)
     const raw = Number(item?.raw ?? item?.value)
@@ -1514,19 +1561,38 @@ function applyImport(data: any) {
     if (index === 28) { skipped++; continue }  // 检流电阻：独立模块，不随模板导入下发
     const r = ((Math.trunc(raw) & 0xffff) >>> 0) & 0xffff
     const def = fieldByIndex(index)
-    const display = def ? paramRawToDisplay(index, r) : r
-    // 在 applyImport 覆盖 f.value 之前，先记录设备上的真实当前值
-    const current = def ? def.value : null
-    out.push({ index, label: item?.label || def?.label || `寄存器[${index}]`, unit: item?.unit || def?.unit || '', value: display, raw: r, current })
+    if (!def) continue
+    // SCD 拆分字段：从组合 raw 中还原 level + delay，分别回填到两个 UI 字段并生成两行预览
+    if (def.kind === 'scd') {
+      const { level, delay } = splitScd(r)
+      const peer = scdPeer(def)
+      // 在覆盖前捕获设备真实当前值（分别对应 level 和 delay 部分）
+      const currentLevel = def.value ?? null
+      const currentDelay = peer?.value ?? null
+      // 回填 UI 字段
+      if (!appliedFields.has(def)) {
+        def.value = level; def.dirty = true; def.status = 'idle'
+        appliedFields.add(def)
+      }
+      if (peer && !appliedFields.has(peer)) {
+        peer.value = delay; peer.dirty = true; peer.status = 'idle'
+        appliedFields.add(peer)
+      }
+      // 预览表生成两行（level + delay）
+      out.push({ index, label: def.label, unit: def.unit || '', value: level, raw: r, current: currentLevel })
+      out.push({ index, label: peer?.label || `${def.label}(延时)`, unit: peer?.unit || '', value: delay, raw: r, current: currentDelay })
+      continue
+    }
+    // 普通（非 SCD）字段：原有逻辑
+    const display = paramRawToDisplay(index, r)
+    const current = def.value ?? null
+    out.push({ index, label: item?.label || def.label || `寄存器[${index}]`, unit: item?.unit || def.unit || '', value: display, raw: r, current })
+    def.value = display; def.dirty = true; def.status = 'idle'
   }
   if (!out.length) { ElMessage.error('未找到有效参数（请检查文件内容）'); return }
   importedParams.value = out
   importDialogVisible.value = true
-  for (const p of out) {
-    const f = fieldByIndex(p.index)
-    if (f) { f.value = p.value; f.dirty = true; f.status = 'idle' }
-  }
-  ElMessage.success(`已导入 ${out.length} 个参数，可在预览中核对后下发`)
+  ElMessage.success(`已导入 ${out.length} 个参数（含 SCD 拆分行），可在预览中核对后下发`)
 }
 
 function clearImport() { importedParams.value = [] }
@@ -1553,9 +1619,12 @@ async function sendAllImported() {
     if (!entered) { busy.value = false; return }
   }
   const list = importedParams.value
+  const sent = new Set<number>() // 同一寄存器只写一次（SCD 的 level/delay 两行共享同一 raw）
   for (let i = 0; i < list.length; i++) {
     progress.value = Math.round((i / list.length) * 100)
     const p = list[i]
+    if (sent.has(p.index)) { ok++; p.status = 'ok'; continue } // SCD 延时行：跳过写入，标记成功
+    sent.add(p.index)
     jbdBus.send(buildWriteParam(p.index, [(p.raw >> 8) & 0xff, p.raw & 0xff]))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
     if (!resp || resp.timeout || resp.status !== 0x00) { fail++; p.status = 'fail'; ElMessage.error(`写参数[${p.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`) }
@@ -1570,9 +1639,28 @@ async function sendAllImported() {
 
 // 构造与导出文件同构的配置对象（供「导出配置」与「存为模板」共用）
 function buildExportData() {
-  const params = allFields.value
-    .filter((f) => f.value !== null && f.index !== undefined && !f.customDisplay && !f.readOnly && !f.ascii && f.bitIndex === undefined)
-    .map((f) => ({ index: f.index!, label: f.label, unit: f.unit || '', value: f.value as number, raw: paramDisplayToRaw(f.index!, f.value as number) }))
+  const params: any[] = []
+  const emitted = new Set<number>() // SCD 寄存器只导出一次（level 部分携带组合 raw）
+  for (const f of allFields.value) {
+    if (f.value === null || f.index === undefined || f.customDisplay || f.readOnly || f.ascii || f.bitIndex !== undefined) continue
+    // SCD 拆分字段：delay 部分跳过（与 level 共享同一寄存器，由 level 条目统一导出）
+    if (f.kind === 'scd' && f.scdPart === 'delay') continue
+    let raw: number
+    let value: number
+    if (f.kind === 'scd' && f.scdPart === 'level') {
+      // SCD：把 level + delay 组合成完整 16 位 raw 导出，确保导入时能正确还原两部分
+      const peer = scdPeer(f)
+      const levelVal = f.value as number
+      const delayVal = peer?.value ?? 0
+      raw = combineScd(levelVal, delayVal) & 0xffff
+      value = levelVal
+      emitted.add(f.index)
+    } else {
+      raw = paramDisplayToRaw(f.index!, f.value as number)
+      value = f.value as number
+    }
+    params.push({ index: f.index!, label: f.label, unit: f.unit || '', value, raw })
+  }
   return { type: 'jbd-param-config', version: '1.0', exportedAt: new Date().toISOString(), params }
 }
 

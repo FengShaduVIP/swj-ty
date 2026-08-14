@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
-import { SerialManager } from './serial'
+import { SerialManager, type AutoConnectConfig } from './serial'
 
 let mainWindow: BrowserWindow | null = null
 const serialManager = new SerialManager()
@@ -63,7 +63,19 @@ ipcMain.handle('serial:status', () => {
   return serialManager.getStatus()
 })
 
-// 6. 监听串口数据 - 转发到渲染进程
+// 6. 设置/取消自动连接（按 VID/PID 匹配 USB 串口，启动即连 + 插拔重连）
+ipcMain.handle('serial:setAutoConnect',
+  (_event, enabled: boolean, config?: AutoConnectConfig) => {
+    serialManager.setAutoConnect(enabled, config)
+    return { success: true }
+  })
+
+// 7. 读取当前自动连接配置
+ipcMain.handle('serial:getAutoConnect', () => {
+  return serialManager.getAutoConnect()
+})
+
+// 8. 监听串口数据 - 转发到渲染进程
 serialManager.onData((data: Buffer) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('serial:data', Array.from(data))

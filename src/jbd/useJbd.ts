@@ -393,7 +393,8 @@ export function useJbd() {
   return {
     // 状态
     connected,
-    basicInfo, cellVoltages, internalRes, hwVersion, protectCounts, chipType,
+    basicInfo,
+    cellVoltages, internalRes, hwVersion, protectCounts, chipType,
     paramResult, ackHistory, inFactory, autoPollProxy,
     paramReg, paramCount, paramWriteReg, paramWriteVal,
     oldPwd, newPwd, btOld, btNew,
@@ -410,6 +411,7 @@ export function useJbd() {
     send, pollSend,
     readBasic, readCells, readHw, readProtect, readChip, readRes,
     onPollChange,
+    restartPoll: startPoll,
     recordSample, clearTrend,
     setMos, setMosBoth,
     controlButtons, runControl,

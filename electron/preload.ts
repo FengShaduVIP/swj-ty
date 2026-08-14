@@ -21,6 +21,14 @@ contextBridge.exposeInMainWorld('serialAPI', {
   getStatus: (): Promise<SerialStatus> =>
     ipcRenderer.invoke('serial:status'),
 
+  // 设置/取消自动连接（按 VID/PID 匹配 USB 串口）
+  setAutoConnect: (enabled: boolean, config?: AutoConnectConfig): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('serial:setAutoConnect', enabled, config),
+
+  // 读取当前自动连接配置
+  getAutoConnect: (): Promise<AutoConnectConfig | null> =>
+    ipcRenderer.invoke('serial:getAutoConnect'),
+
   // 监听串口数据
   onData: (callback: (data: number[]) => void) => {
     ipcRenderer.on('serial:data', (_event, data: number[]) => callback(data))
@@ -68,4 +76,18 @@ export interface SerialStatus {
   connected: boolean
   portPath?: string
   baudRate?: number
+  /** 本次连接是否由自动连接守护建立（渲染层用于决定是否自动跳转监测页） */
+  auto?: boolean
+}
+
+/** 自动连接配置：按 VID/PID（可选名称）匹配 USB 串口 */
+export interface AutoConnectConfig {
+  enabled: boolean
+  vendorId?: string
+  productId?: string
+  friendlyName?: string
+  baudRate: number
+  dataBits?: 5 | 6 | 7 | 8
+  stopBits?: 1 | 1.5 | 2
+  parity?: 'none' | 'even' | 'odd' | 'mark' | 'space'
 }

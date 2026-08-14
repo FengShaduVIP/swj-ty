@@ -29,6 +29,20 @@ interface SerialStatus {
   connected: boolean
   portPath?: string
   baudRate?: number
+  /** 本次连接是否由自动连接守护建立（渲染层用于决定是否自动跳转监测页） */
+  auto?: boolean
+}
+
+/** 自动连接配置：按 VID/PID（可选名称）匹配 USB 串口 */
+interface AutoConnectConfig {
+  enabled: boolean
+  vendorId?: string
+  productId?: string
+  friendlyName?: string
+  baudRate: number
+  dataBits?: 5 | 6 | 7 | 8
+  stopBits?: 1 | 1.5 | 2
+  parity?: 'none' | 'even' | 'odd' | 'mark' | 'space'
 }
 
 interface SerialAPI {
@@ -37,6 +51,8 @@ interface SerialAPI {
   disconnect: () => Promise<{ success: boolean }>
   send: (data: number[]) => Promise<{ success: boolean }>
   getStatus: () => Promise<SerialStatus>
+  setAutoConnect: (enabled: boolean, config?: AutoConnectConfig) => Promise<{ success: boolean }>
+  getAutoConnect: () => Promise<AutoConnectConfig | null>
   onData: (callback: (data: number[]) => void) => void
   onError: (callback: (error: string) => void) => void
   onStatusChange: (callback: (status: SerialStatus) => void) => void
