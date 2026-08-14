@@ -233,6 +233,17 @@ export function scdLevelMv(chipType: number | null, level: number): number {
 }
 
 /**
+ * 保护值档位 → 真实过流电流(A)
+ *   按实测档位表递推：1档=80A, 2档=110A, ... 每档 +30A → 公式 50 + 30*N。
+ *   0 档视为未设置，显示为 0A。
+ */
+export function scdLevelAmp(level: number): number {
+  const n = level & 0x0f
+  if (n === 0) return 0
+  return 50 + 30 * n
+}
+
+/**
  * 延迟档位 → 真实延迟(uS)
  *   凹凸(1): 62.5*D + 62.5；松下(2): 62.5*D + 31.25；未知方案默认凹凸。
  */
@@ -242,12 +253,37 @@ export function scdDelayUs(chipType: number | null, delay: number): number {
   return 62.5 * d + 62.5
 }
 
-/** 下拉框 option label：第 N 档 → 真实值，如 『档2 · 40 mV』 */
+/** 下拉框 option label：第 N 档 → 真实电压值，如 『档2 · 40 mV』 */
 export function scdLevelLabel(chipType: number | null, level: number): string {
   return `档${level} · ${scdLevelMv(chipType, level)} mV`
 }
+/** 下拉框 option label：第 N 档 → 真实过流电流值，如 『档1 · 80 A』（0 档未设置） */
+export function scdLevelAmpLabel(level: number): string {
+  const n = level & 0x0f
+  return `档${n} · ${scdLevelAmp(n)} A`
+}
 export function scdDelayLabel(chipType: number | null, delay: number): string {
   return `档${delay} · ${scdDelayUs(chipType, delay)} µS`
+}
+
+/**
+ * 延迟档位 → 真实延时(ms)
+ *   实测档位表：1档=8ms, 2档=20ms, 3档=40ms, ... 8档=1280ms，
+ *   之后每档 ×2 递推：n<=2 时 1→8 / 2→20，n>=3 时 20 * 2^(n-2)。
+ *   0 档视为未设置，显示为 0ms。
+ */
+export function scdDelayMs(delay: number): number {
+  const n = delay & 0x0f
+  if (n === 0) return 0
+  if (n === 1) return 8
+  if (n === 2) return 20
+  return 20 * Math.pow(2, n - 2)
+}
+
+/** 下拉框 option label：第 N 档 → 真实延时(ms)，如 『档1 · 8 ms』 */
+export function scdDelayMsLabel(delay: number): string {
+  const n = delay & 0x0f
+  return `档${n} · ${scdDelayMs(n)} ms`
 }
 
 /** 显示用格式化字符串（带合适小数位 / 十六进制 / 日期） */

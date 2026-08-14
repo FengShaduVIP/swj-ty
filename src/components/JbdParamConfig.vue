@@ -233,7 +233,7 @@ import {
   buildReadParam, buildWriteParam, buildSetBtName,
   buildEnterFactory, buildExitFactory,
 } from '@/jbd/jbd-protocol'
-import { paramRawToDisplay, paramDisplayToRaw, paramFormat, splitScd, combineScd, scdLevelLabel, scdDelayLabel } from '@/jbd/jbd-params'
+import { paramRawToDisplay, paramDisplayToRaw, paramFormat, splitScd, combineScd, scdLevelLabel, scdLevelAmpLabel, scdDelayMsLabel } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
 import StatusBadge from './StatusBadge.vue'
 
@@ -434,9 +434,13 @@ function onSelectChange(f: FieldState, v: any) {
 /** 根据芯片方案生成下拉选项（0~15 共 16 档，label 显示真实物理量） */
 function scdOptions(f: FieldState): { label: string; value: number }[] {
   const chip = j.chipType.value
-  const fn = f.scdPart === 'delay' ? scdDelayLabel : scdLevelLabel
+  // level 部分：保护值档位按过流电流(A)显示（1档=80A 起，每档 +30A）
+  // delay 部分：按延迟(uS)显示
+  const fn: (i: number) => string = f.scdPart === 'delay'
+    ? scdDelayMsLabel
+    : (f.scdPart === 'level' ? scdLevelAmpLabel : (i: number) => scdLevelLabel(chip, i))
   const out: { label: string; value: number }[] = []
-  for (let i = 0; i <= 15; i++) out.push({ label: fn(chip, i), value: i })
+  for (let i = 0; i <= 15; i++) out.push({ label: fn(i), value: i })
   return out
 }
 /** 取同 index 的另一个 part 字段（用于合成下发） */
