@@ -266,6 +266,13 @@
                     >下发</el-button>
                   </template>
                 </el-input>
+                <el-button
+                  v-if="f.resetMcu"
+                  size="small"
+                  type="warning"
+                  :disabled="!connected"
+                  @click="confirmResetMcu"
+                >复位MCU</el-button>
                 <span v-if="f.status === 'ok'" class="dot ok" />
                 <span v-else-if="f.status === 'fail'" class="dot fail" title="失败/超时" />
               </div>
@@ -299,6 +306,7 @@ import { jbdBus } from '@/jbd/jbd-bus'
 import {
   buildReadParam, buildWriteParam, buildSetBtName,
   buildEnterFactory, buildExitFactory,
+  buildControlCommand, CONTROL_FUNC,
 } from '@/jbd/jbd-protocol'
 import { paramRawToDisplay, paramDisplayToRaw, paramFormat, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
@@ -330,6 +338,8 @@ interface FieldDef {
   customDisplay?: CustomDisplayKind
   /** 跨列占满（用于检流阻值等） */
   fullWidth?: boolean
+  /** 字段行内附带「复位 MCU」按钮（与设备控制页功能一致） */
+  resetMcu?: boolean
   /** 下拉选项字段：value 为下发到 BMS 的原始寄存器值 */
   options?: { label: string; value: number }[]
   /** 复合保护字段：单个寄存器 16 位，低字节高半字节=保护值档位(level)、低字节低半字节=延迟档位(delay) */
@@ -675,7 +685,7 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
     title: '基本设置',
     order: 1,
     fields: [
-      { label: '蓝牙名称', key: 'bt-name', index: 88, ascii: true, ascii_len: 16 },
+      { label: '蓝牙名称', key: 'bt-name', index: 88, ascii: true, ascii_len: 16, fullWidth: true, resetMcu: true },
       { label: '芯片类型', key: 'chip-type', customDisplay: 'chipType' },
       { label: '电池SN码', key: 'sn', index: 6, customDisplay: 'serialRaw', readOnly: true },
       { label: '电池型号', key: 'battery-model', index: 158, ascii: true, ascii_len: 12, readOnly: true },
@@ -998,6 +1008,18 @@ function resetToDefault() {
   try { localStorage.removeItem(DRAG_ORDER_KEY) } catch { /* 忽略 */ }
   columns.value = buildColumnsFromTitles(defaultColumnOrder)
   ElMessage.success('已恢复默认顺序')
+}
+
+// 字段行内「复位 MCU」按钮：与设备控制页 runControl(RESET_MCU) 同源，发送控制指令 0x03 0x00
+async function confirmResetMcu() {
+  if (!props.connected) { ElMessage.warning('请先连接串口'); return }
+  try {
+    await ElMessageBox.confirm('确定要复位 MCU 吗？设备将重新启动。', '复位 MCU', { type: 'warning' })
+  } catch {
+    return // 用户取消
+  }
+  await jbdBus.send(buildControlCommand(CONTROL_FUNC.RESET_MCU))
+  ElMessage.success('已发送复位 MCU 指令')
 }
 
 // ====== 工厂模式 ======
@@ -1358,6 +1380,9 @@ async function readAll() {
   for (const f of allFields.value) {
     if (f.customDisplay && f.customDisplay !== 'date' && f.customDisplay !== 'serialRaw') continue
     if (f.readOnly && f.index === undefined) continue
+    // ASCII 字段（蓝牙名称等）设备对大跨度批量读易返回错位数据，不参与批量收集，
+    // 改为下方回填阶段逐字段走 readField 单读（与「读本组」同源，已验证可靠）。
+    if (f.ascii) continue
     for (const r of fieldRegisters(f)) regSet.add(r)
   }
   if (!regSet.size) { busy.value = false; ElMessage.warning('没有可读取的参数'); return }
@@ -1408,6 +1433,12 @@ async function readAll() {
     const canReadCustomDisplay = f.customDisplay === 'date' || f.customDisplay === 'serialRaw'
     if (f.customDisplay && !canReadCustomDisplay) continue // 派生展示（芯片类型/硬件版本/NTC 数/均衡模式），不参与 0xFA 读
     if (f.readOnly && f.index === undefined) continue
+    // ASCII 字段：逐字段单读（readField），避免大跨度批量读的设备错位问题
+    if (f.ascii) {
+      const okRead = await readField(f)
+      if (okRead) ok++; else { f.status = 'fail'; fail++ }
+      continue
+    }
     const fr = fieldRegisters(f)
     if (fr.some((r) => failedRegs.has(r))) { f.status = 'fail'; fail++; continue }
     if (applyFieldFromRaw(f, rawMap)) ok++
