@@ -212,10 +212,13 @@ export function buildWriteParam(reg: number, values: number[]): number[] {
   const count = values.length / 2
   return buildWrite(CMD.PARAM, [(reg >> 8) & 0xff, reg & 0xff, count & 0xff, ...values])
 }
-// 蓝牙名称专用修改指令：DD 5A A2 <len> <nameBytes> <chk> 77
-// 首字节 <len> = 蓝牙名称的长度（UTF-8 字节数）。以 "V3--F80722" 为例长度为 10 → 0x0A，
-// 此前写死的 0x0a 只在该名称恰好 10 字节时正确，名称长度变化即错位，故改为动态长度。
-// 名称按 UTF-8 编码下发（ASCII 与旧行为逐字节一致；中文等不再被 &0xff 截断）。
+// 蓝牙名称专用修改指令：DD 5A A2 <len> <nameBytes...> <chk> 77
+// 帧结构（与通用 buildWrite 一致）：DD 5A [命令 0xA2] [长度] [数据] [校验H] [校验L] 77。
+// 数据载荷 = [名称长度(UTF-8 字节数), ...名称字节]；buildWrite 自动把“长度”字段设为
+// 数据字节数（= 名称长度 + 1），即蓝牙名越长该字段越大，无需固定 32 字节填充。
+// 例：名称 "V3--F82064"（10 字节）→ 数据 11 字节 → 下发
+//     DD 5A A2 0B 0A 56 33 2D 2D 46 38 32 30 36 34 FD 1C 77（已用设备真值校验）。
+// 名称按 UTF-8 编码（ASCII 与旧行为逐字节一致；中文等不再被 &0xff 截断）。
 // 校验沿用 JBD 的 calcChecksum（非 CRC16）。读取蓝牙名称仍走 0xFA 参数寄存器 88~103（见 JbdParamConfig）。
 export function buildSetBtName(name: string): number[] {
   const str = String(name ?? '')

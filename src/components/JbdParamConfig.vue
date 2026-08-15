@@ -1157,7 +1157,7 @@ async function writeField(f: FieldState): Promise<boolean> {
   }
   // ASCII 字段：多寄存器写（ascii_len 个寄存器 → ascii_len*2 字节）
   if (f.ascii) {
-    // 蓝牙名称：走专用修改指令 DD 5A A2 <len> 0A <name> <chk> 77（校验仍用 calcChecksum）
+    // 蓝牙名称：走专用修改指令 DD 5A A2 <len> <name...> <chk> 77（载荷 [长度][名称]，无填充，长度字段=名称长度+1）
     if (f.key === 'bt-name') {
       jbdBus.send(buildSetBtName(String(f.value ?? '')))
       const resp = await jbdBus.onceResponse(1500, 0xa2)
