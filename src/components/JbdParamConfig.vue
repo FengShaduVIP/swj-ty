@@ -246,7 +246,7 @@
                 <!-- 普通数值字段：单位放 suffix，下发按钮放 append -->
                 <el-input
                   v-else
-                  :model-value="f.value"
+                  :model-value="formatFieldValue(f)"
                   type="number"
                   size="small"
                   style="flex: 1"
@@ -308,7 +308,7 @@ import {
   buildEnterFactory, buildExitFactory,
   buildControlCommand, CONTROL_FUNC,
 } from '@/jbd/jbd-protocol'
-import { paramRawToDisplay, paramDisplayToRaw, paramFormat, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs } from '@/jbd/jbd-params'
+import { paramRawToDisplay, paramDisplayToRaw, paramFormat, paramDisplayDecimals, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
 import StatusBadge from './StatusBadge.vue'
 
@@ -593,6 +593,18 @@ function onNumInput(f: FieldState, v: any) {
   f.dirty = true
 }
 
+/** 数值字段显示格式化：按字段 decimals（缺省按协议寄存器精度）四舍五入，并去除尾随零，
+ * 消除浮点运算产生的脏尾数（如 4.2000000002、30.499999996）。仅影响显示，不改写 f.value 真值。 */
+function formatFieldValue(f: FieldState): string {
+  const v = f.value
+  if (v === null || v === undefined || v === '') return ''
+  const num = Number(v)
+  if (Number.isNaN(num)) return String(v)
+  const d = f.decimals ?? (f.index !== undefined ? paramDisplayDecimals(f.index) : 0)
+  const s = num.toFixed(d)
+  return s.includes('.') ? s.replace(/\.?0+$/, '') : s
+}
+
 /** 下拉选项字段输入：直接存原始 value 并标脏 */
 function onSelectChange(f: FieldState, v: any) {
   f.value = Number(v)
@@ -723,15 +735,15 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
     title: '容量电压',
     order: 3,
     fields: [
-      { label: '10%', index: 109, unit: 'mV', decimals: 0 },
+      { label: '10%', index: 110, unit: 'mV', decimals: 0 },
       { label: '20%', index: 37, unit: 'mV', decimals: 0 },
-      { label: '30%', index: 108, unit: 'mV', decimals: 0 },
+      { label: '30%', index: 109, unit: 'mV', decimals: 0 },
       { label: '40%', index: 36, unit: 'mV', decimals: 0 },
-      { label: '50%', index: 107, unit: 'mV', decimals: 0 },
+      { label: '50%', index: 108, unit: 'mV', decimals: 0 },
       { label: '60%', index: 35, unit: 'mV', decimals: 0 },
-      { label: '70%', index: 106, unit: 'mV', decimals: 0 },
+      { label: '70%', index: 107, unit: 'mV', decimals: 0 },
       { label: '80%', index: 34, unit: 'mV', decimals: 0 },
-      { label: '90%', index: 105, unit: 'mV', decimals: 0 },
+      { label: '90%', index: 106, unit: 'mV', decimals: 0 },
       { label: '100%', index: 111, unit: 'mV', decimals: 0 },
       { label: '置满电压', index: 2, unit: 'mV', decimals: 0 },
       { label: '置空电压', index: 3, unit: 'mV', decimals: 0 },
@@ -1383,6 +1395,10 @@ async function readAll() {
     // ASCII 字段（蓝牙名称等）设备对大跨度批量读易返回错位数据，不参与批量收集，
     // 改为下方回填阶段逐字段走 readField 单读（与「读本组」同源，已验证可靠）。
     if (f.ascii) continue
+    // scd 复合保护字段（二级过流/短路，寄存器 40/41）：与相邻寄存器（36~39）连续，
+    // 合并批量读时设备对跨边界多寄存器读返回错位数据（level 半字节变 0），单读则正常。
+    // 故 scd 不走批量收集，下方回填阶段逐字段走 readField 单读（与「读本组」一致）。
+    if (f.kind === 'scd') continue
     for (const r of fieldRegisters(f)) regSet.add(r)
   }
   if (!regSet.size) { busy.value = false; ElMessage.warning('没有可读取的参数'); return }
@@ -1433,8 +1449,9 @@ async function readAll() {
     const canReadCustomDisplay = f.customDisplay === 'date' || f.customDisplay === 'serialRaw'
     if (f.customDisplay && !canReadCustomDisplay) continue // 派生展示（芯片类型/硬件版本/NTC 数/均衡模式），不参与 0xFA 读
     if (f.readOnly && f.index === undefined) continue
-    // ASCII 字段：逐字段单读（readField），避免大跨度批量读的设备错位问题
-    if (f.ascii) {
+    // ASCII 字段 / scd 复合保护字段：逐字段单读（readField），
+    // 避免大跨度/跨边界批量读的设备错位问题（scd 单读与「读本组」同源，已验证可靠）。
+    if (f.ascii || f.kind === 'scd') {
       const okRead = await readField(f)
       if (okRead) ok++; else { f.status = 'fail'; fail++ }
       continue

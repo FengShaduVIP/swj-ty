@@ -376,13 +376,25 @@ const { onConnChange: tianyiOnConnChange } = useTianyi()
 const pendingVerify = ref(false)
 const pendingJump = ref(false)
 let verifyTimer: ReturnType<typeof setTimeout> | null = null
-
+// 嘉百达等设备在串口刚打开后首帧常被丢弃（第一次发送无返回，第二次才有应答）。
+// 连接验证补发多次（间隔 400ms），任一收到即成功，彻底规避首帧丢弃导致的「超时无响应」。
+let verifyRetryTimers: number[] = []
+function clearVerifyRetries() {
+  verifyRetryTimers.forEach((t) => clearTimeout(t))
+  verifyRetryTimers = []
+}
 function startVerify(autoJump = false) {
   pendingVerify.value = true
   pendingJump.value = autoJump
-  readBasic() // 发 0x03 读基本信息，验证确为 BMS 设备
+  clearVerifyRetries()
+  // 第 0 次立即发（可能丢弃），其后每 400ms 补发一次，最多 3 次
+  for (let i = 0; i < 3; i++) {
+    const t = window.setTimeout(() => { if (pendingVerify.value) readBasic() }, i * 400)
+    verifyRetryTimers.push(t)
+  }
   if (verifyTimer) clearTimeout(verifyTimer)
   verifyTimer = setTimeout(() => {
+    clearVerifyRetries()
     if (pendingVerify.value) {
       pendingVerify.value = false
       pendingJump.value = false
@@ -393,6 +405,7 @@ function startVerify(autoJump = false) {
 watch(basicInfo, (v) => {
   if (v && pendingVerify.value) {
     pendingVerify.value = false
+    clearVerifyRetries()
     const shouldJump = pendingJump.value
     pendingJump.value = false
     if (verifyTimer) { clearTimeout(verifyTimer); verifyTimer = null }

@@ -327,6 +327,17 @@ export function scdDelayLabelMs(param: ScdParam, chip: number | null, delay: num
   return `档${delay} · ${trimNum(ms, 3)} ms`
 }
 
+/** 显示值应保留的小数位数（与 paramFormat 一致）：temp→1、shunt→2、scale<1→-log10(scale)（上限 4）、否则 0。
+ *  用于在界面文本框中按协议精度四舍五入，去除浮点运算产生的尾随零/脏尾数。 */
+export function paramDisplayDecimals(reg: number): number {
+  const def = defOf(reg)
+  if (!def) return 0
+  if (def.kind === 'temp') return 1
+  if (def.kind === 'shunt') return 2
+  if (def.scale !== undefined && def.scale < 1) return Math.min(Math.round(-Math.log10(def.scale)), 4)
+  return 0
+}
+
 /** 显示用格式化字符串（带合适小数位 / 十六进制 / 日期） */
 export function paramFormat(reg: number, raw: number): string {
   const def = defOf(reg)
