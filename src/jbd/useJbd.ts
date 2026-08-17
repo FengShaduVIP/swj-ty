@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch, effectScope } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   buildReadBasicInfo, buildReadCellVoltages, buildReadHardwareVersion,
@@ -168,7 +168,20 @@ function readBasic() { send(buildReadBasicInfo()) }
 function readCells() { send(buildReadCellVoltages()) }
 function readHw() { send(buildReadHardwareVersion()) }
 function readProtect() { send(buildReadProtectCounts()) }
-function readChip() { send(buildReadChipType()) }
+// 芯片类型决定二级过流/短路保护下拉框的档位物理量，必须可靠读到。
+// 嘉百达等设备在串口刚打开后首帧常被丢弃，且连接初期发送器未必就绪
+// （jbdBus.setConnected(true) 由主进程 onStatusChange 异步触发，晚于 ui.conn 置位），
+// 故读取失败需补发重试（与 startVerify 同源策略），避免首帧/竞态丢帧导致
+// 下拉框始终拿不到芯片方案而误显示 0A。
+async function readChip() {
+  if (!connected.value) return
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (chipType.value != null || !connected.value) return
+    const f = await jbdBus.sendAck(buildReadChipType())
+    if (!f.timeout && f.valid && f.status === 0x00) return
+    await new Promise((r) => setTimeout(r, 400))
+  }
+}
 function readRes() { send(buildReadInternalRes()) }
 
 let pollTimer: number | null = null
@@ -389,6 +402,16 @@ function handleFrame(f: Frame) {
 
 let busSub: (() => void) | null = null
 if (!busSub) busSub = jbdBus.onFrame((f) => handleFrame(f))
+
+// 连接建立且尚未识别芯片方案时，自动读取芯片类型。
+// 芯片方案决定二级过流/短路保护下拉框的物理量档位，缺它会导致下拉全显示 0.00A 而误导用户。
+// 用 detached effectScope 在模块级建立一次永久 watch，不依赖任何组件生命周期，
+// 从而参数配置页也能可靠拿到芯片类型（不必依赖监控页的 refreshAll 触发）。
+effectScope(true).run(() => {
+  watch(connected, (isConnected) => {
+    if (isConnected && chipType.value == null) readChip()
+  })
+})
 
 export function useJbd() {
   return {

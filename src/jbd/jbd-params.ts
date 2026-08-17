@@ -287,6 +287,17 @@ export function shortCircuitDelayUs(chip: number | null, delay: number): number 
   return lookup(SCD_DELAY_US, chip, delay)
 }
 
+/** 该芯片是否有二级过流/短路保护的档位查表（决定下拉框能否显示有意义的物理量）。
+ *  - null / 未读取：未知，下拉框应提示而非显示 0A。
+ *  - TI(0)：无 mV 表，label 标注「TI专用」，视为已知、不误伤。
+ *  - 1~6：有查表，正常显示档位物理量。
+ *  - 其它（如固件返回未在 CHIP_TYPES 内的值）：无表，下拉框应提示而非显示 0A。 */
+export function isChipScdKnown(chip: number | null): boolean {
+  if (chip === null || chip === undefined) return false
+  if (chip === 0) return true
+  return OCD_MV[chip] !== undefined && SCD_MV[chip] !== undefined
+}
+
 function trimNum(n: number, max = 3): string {
   if (!isFinite(n)) return '—'
   const r = Math.round(n * 10 ** max) / 10 ** max

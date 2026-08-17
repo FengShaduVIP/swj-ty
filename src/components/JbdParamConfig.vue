@@ -225,7 +225,8 @@
                     :model-value="f.value"
                     size="small"
                     style="flex: 1"
-                    :disabled="!connected || f.status === 'reading'"
+                    :disabled="(f.kind === 'scd' && !isChipScdKnown(j.chipType.value)) || !connected || f.status === 'reading'"
+                    :placeholder="(f.kind === 'scd' && !isChipScdKnown(j.chipType.value)) ? '未知芯片，请先读取芯片类型' : ''"
                     @update:model-value="(v: any) => onSelectChange(f, v)"
                   >
                     <el-option
@@ -308,7 +309,7 @@ import {
   buildEnterFactory, buildExitFactory,
   buildControlCommand, CONTROL_FUNC,
 } from '@/jbd/jbd-protocol'
-import { paramRawToDisplay, paramDisplayToRaw, paramFormat, paramDisplayDecimals, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs } from '@/jbd/jbd-params'
+import { paramRawToDisplay, paramDisplayToRaw, paramFormat, paramDisplayDecimals, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs, isChipScdKnown } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
 import StatusBadge from './StatusBadge.vue'
 
@@ -615,6 +616,11 @@ function onSelectChange(f: FieldState, v: any) {
 /** 根据芯片方案生成下拉选项（0~15 共 16 档，label 显示具体物理量） */
 function scdOptions(f: FieldState): { label: string; value: number }[] {
   const chip = j.chipType.value
+  // 芯片方案未知或无档位查表时下拉内容无意义：返回提示项，避免显示全 0.00A 误导用户
+  // （见 useJbd 的 readChip 重读 + 重试逻辑）
+  if (!isChipScdKnown(chip)) {
+    return [{ label: '未知芯片方案，请先读取芯片类型', value: -1 }]
+  }
   const shunt = shuntMOhm.value
   // 二级过流 = 寄存器 40；短路 = 寄存器 41
   const param: 'ocd' | 'scd' = f.index === 40 ? 'ocd' : 'scd'

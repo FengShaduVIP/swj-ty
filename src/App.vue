@@ -23,6 +23,52 @@
           <span class="sb-rk">{{ r.k }}</span>
           <span class="sb-rv num" :style="{ color: r.color }">{{ r.v }}</span>
         </div>
+
+        <!-- 顶部快速串口连接 -->
+        <div class="sb-divider" />
+        <div class="sb-port">
+          <el-select
+            v-model="topPort"
+            placeholder="选择串口"
+            size="small"
+            :disabled="connected"
+            style="width: 156px"
+            @focus="handleRefreshPorts"
+          >
+            <el-option
+              v-for="port in ports"
+              :key="port.path"
+              :label="`${port.path} ${port.manufacturer || ''}`"
+              :value="port.path"
+            />
+          </el-select>
+          <button
+            class="sb-icon"
+            title="刷新串口列表"
+            :disabled="connected"
+            @click="handleRefreshPorts"
+          >
+            <el-icon :size="14"><Refresh /></el-icon>
+          </button>
+          <el-button
+            v-if="!connected"
+            type="primary"
+            size="small"
+            :disabled="!topPort"
+            :loading="ui.conn === 'connecting'"
+            @click="onTopConnect"
+          >
+            连接
+          </el-button>
+          <el-button
+            v-else
+            type="danger"
+            size="small"
+            @click="handleDisconnect"
+          >
+            断开
+          </el-button>
+        </div>
       </div>
 
       <div class="sb-right">
@@ -184,7 +230,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, markRaw } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Connection, DataBoard, Setting, Fold, Expand, Operation, Tools } from '@element-plus/icons-vue'
+import { Connection, DataBoard, Setting, Fold, Expand, Operation, Tools, Refresh } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
 import JbdPanel from './components/JbdPanel.vue'
 import JbdControl from './components/JbdControl.vue'
@@ -249,6 +295,9 @@ function onKey(e: KeyboardEvent) {
 const connected = computed(() => ui.conn === 'connected')
 const portPath = ref('')
 const ports = ref<SerialPortInfo[]>([])
+const topPort = ref('')
+// 串口连接成功后，把顶部下拉框同步到当前端口；断开时保留原选择，方便重连
+watch(() => ui.portPath, (p) => { if (p) topPort.value = p }, { immediate: true })
 
 interface LogEntry {
   time: string
@@ -288,6 +337,16 @@ async function handleDisconnect() {
   } catch (err: any) {
     ElMessage.error('断开失败: ' + (err.message || err))
   }
+}
+function onTopConnect() {
+  if (!topPort.value) return
+  handleConnect({
+    path: topPort.value,
+    baudRate: 9600,
+    dataBits: 8,
+    stopBits: 1,
+    parity: 'none',
+  })
 }
 async function handleRefreshPorts(): Promise<SerialPortInfo[]> {
   try {
@@ -550,6 +609,10 @@ onUnmounted(() => {
 .sb-readout { display: flex; align-items: baseline; gap: var(--space-3); }
 .sb-rk { font-size: var(--fs-label); font-weight: var(--fw-semibold); letter-spacing: 0.06em; color: var(--text-secondary); text-transform: uppercase; }
 .sb-rv { font-size: var(--fs-num-md); font-weight: var(--fw-semibold); font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; }
+
+.sb-port { display: flex; align-items: center; gap: var(--space-3); }
+.sb-port .el-select { --el-component-size-small: 24px; }
+.sb-port .el-button { height: 24px; padding: 0 12px; font-size: var(--fs-caption); }
 
 .sb-right { display: flex; align-items: center; gap: var(--space-5); margin-left: auto; }
 .sb-chip {

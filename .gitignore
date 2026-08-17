@@ -5,3 +5,9 @@ dist-win/
 release/
 *.log
 .DS_Store
+/.idea/
+/package-lock.json
+/.workbuddy/
+/release/
+/.release-fixed/
+/.verify-out/
