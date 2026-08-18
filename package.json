@@ -1,6 +1,6 @@
 {
   "name": "serial-modbus-tool",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "productName": "天一BMS",
   "author": "BaoMihua",
   "description": "天一BMS - 锂电池 PACK 上位机监控软件 (JBD BMS) - Electron + Element Plus",

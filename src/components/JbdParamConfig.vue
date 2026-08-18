@@ -707,8 +707,8 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
       { label: '芯片类型', key: 'chip-type', customDisplay: 'chipType' },
       { label: '电池SN码', key: 'sn', index: 6, customDisplay: 'serialRaw', readOnly: true },
       { label: '电池型号', key: 'battery-model', index: 158, ascii: true, ascii_len: 12, readOnly: true },
-      { label: '电池生产商', key: 'mfr', index: 56, ascii: true, ascii_len: 16, readOnly: true },
-      { label: 'BMS版本号', key: 'bms-ver', index: 72, ascii: true, ascii_len: 16, readOnly: true },
+      { label: '生产厂商信息', key: 'mfr', index: 56, ascii: true, ascii_len: 16 },
+      { label: 'BMS编码信息', key: 'bms-ver', index: 72, ascii: true, ascii_len: 16 },
       { label: 'BMS型号', key: 'bms-hw-name', index: 176, ascii: true, ascii_len: 8, readOnly: true },
       { label: '生产日期', index: 5, customDisplay: 'date', readOnly: true },
       { label: '额定充电电压', index: 117, unit: 'V', decimals: 1, step: 0.1 },
@@ -771,13 +771,15 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
       { label: '温度探头_8',  key: 'probe-8',  bitIndex: 30, bit: 7  },
     ],
   },
-  // 6. 均衡设置（2 项 / 3 列 × 1 行）
+  // 6. 均衡设置（4 项 / 3 列 × 2 行）
   {
     title: '均衡设置',
     order: 6,
     fields: [
       { label: '均衡电流', key: 'bal-current', readOnly: true, note: '需协议补充' },
-      { label: '均衡精度', index: 27, unit: 'mV', decimals: 0 },
+      { label: '均衡开启电压', index: 26, unit: 'mV', decimals: 0 },
+      { label: '均衡开启压差', index: 27, unit: 'mV', decimals: 0 },
+      { label: 'GPS关闭电压', index: 104, unit: 'mV', decimals: 0 },
     ],
   },
   // 4. 系统设置（5 项 / 3 列 × 2 行）
