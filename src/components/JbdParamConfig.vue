@@ -215,6 +215,25 @@
                   :disabled="f.status === 'reading' || !connected"
                   @change="onBitChange(f); f.dirty = true"
                 />
+                <!-- 生产日期：日期选择器，可编辑下发（raw = 日|月<<5|(年-2000)<<9） -->
+                <template v-else-if="f.customDisplay === 'date'">
+                  <el-date-picker
+                    :model-value="dateFromRaw(f.value)"
+                    type="date"
+                    size="small"
+                    style="flex: 1"
+                    placeholder="选择日期"
+                    :disabled="!connected || f.status === 'reading'"
+                    @update:model-value="(v: any) => onDateInput(f, v)"
+                  />
+                  <el-button
+                    size="small"
+                    type="primary"
+                    :loading="f.status === 'writing'"
+                    :disabled="!canWrite(f)"
+                    @click="writeField(f)"
+                  >下发</el-button>
+                </template>
                 <!-- 自定义展示字段（来自 useJbd / 派生） -->
                 <span v-else-if="f.customDisplay" class="custom-val mono">{{ customDisplayValue(f) }}</span>
                 <!-- TODO / 只读字段（无可写寄存器） -->
@@ -526,6 +545,23 @@ function customDisplayValue(f: FieldState): string {
   return '—'
 }
 
+/** 生产日期 raw ↔ Date：raw = 日(bit0~4) | 月<<5(bit5~8) | (年-2000)<<9(bit9~15) */
+function dateFromRaw(raw: number | null): Date | null {
+  if (raw === null || raw === undefined || raw === 0) return null
+  const day = raw & 0x1f
+  const month = (raw >> 5) & 0x0f
+  const year = 2000 + ((raw >> 9) & 0x7f)
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null
+  return new Date(year, month - 1, day)
+}
+
+function dateToRaw(d: Date): number {
+  const day = d.getDate() & 0x1f
+  const month = (d.getMonth() + 1) & 0x0f
+  const year = Math.max(0, Math.min(0x7f, d.getFullYear() - 2000))
+  return (day | (month << 5) | (year << 9)) & 0xffff
+}
+
 function isBitSwitch(f: FieldState): boolean {
   return f.bitIndex !== undefined && f.bit !== undefined && f.customDisplay !== 'balanceMode'
 }
@@ -557,6 +593,8 @@ function canRead(f: FieldState): boolean {
 function canWrite(f: FieldState): boolean {
   if (!props.connected) return false
   if (f.readOnly) return false
+  // 生产日期：customDisplay 但可写（日期选择器 → raw → 下发）
+  if (f.customDisplay === 'date' && f.index !== undefined) return f.value !== null
   if (f.customDisplay) return false
   if (isBitSwitch(f)) return false  // 位开关通过 group.action 或 writeAll 下发
   // ASCII：值为字符串（可空串），index 必须存在
@@ -678,6 +716,12 @@ function onAsciiInput(f: FieldState, v: any) {
   f.dirty = true
 }
 
+/** 生产日期选择：Date → raw 存值并标脏 */
+function onDateInput(f: FieldState, v: Date | null) {
+  f.value = v ? dateToRaw(v) : null
+  f.dirty = true
+}
+
 /** ASCII 字段编码：字符串 → (ascii_len 个寄存器 = ascii_len*2 字节)
  *  按 PDF 格式：第 1 字节为字符串长度（字符数），后面紧跟 ASCII 字符，不足补 0。
  */
@@ -710,7 +754,7 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
       { label: '生产厂商信息', key: 'mfr', index: 56, ascii: true, ascii_len: 16 },
       { label: 'BMS编码信息', key: 'bms-ver', index: 72, ascii: true, ascii_len: 16 },
       { label: 'BMS型号', key: 'bms-hw-name', index: 176, ascii: true, ascii_len: 8, readOnly: true },
-      { label: '生产日期', index: 5, customDisplay: 'date', readOnly: true },
+      { label: '生产日期', key: 'prod-date', index: 5, customDisplay: 'date' },
       { label: '额定充电电压', index: 117, unit: 'V', decimals: 1, step: 0.1 },
       { label: '额定充电电流', index: 119, unit: 'A', decimals: 0 },
       { label: '额定放电电流', index: 118, unit: 'A', decimals: 0 },
@@ -771,7 +815,7 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
       { label: '温度探头_8',  key: 'probe-8',  bitIndex: 30, bit: 7  },
     ],
   },
-  // 6. 均衡设置（4 项 / 3 列 × 2 行）
+  // 6. 均衡设置（5 项 / 3 列 × 2 行）
   {
     title: '均衡设置',
     order: 6,
@@ -780,6 +824,7 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
       { label: '均衡开启电压', index: 26, unit: 'mV', decimals: 0 },
       { label: '均衡开启压差', index: 27, unit: 'mV', decimals: 0 },
       { label: 'GPS关闭电压', index: 104, unit: 'mV', decimals: 0 },
+      { label: 'GPS关闭延时', index: 105, unit: 'S', decimals: 0 },
     ],
   },
   // 4. 系统设置（5 项 / 3 列 × 2 行）
