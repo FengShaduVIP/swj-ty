@@ -7,7 +7,8 @@
         <div class="header-actions">
           <StatusBadge :status="inFactory ? 'brand' : 'neutral'" :label="inFactory ? '工厂模式' : '普通模式'" />
           <el-button size="small" :disabled="!connected" :loading="busy" @click="readAll"><el-icon><Refresh /></el-icon> 读取全部</el-button>
-          <el-button size="small" type="primary" :disabled="!connected || !dirtyCount" :loading="busy" @click="writeAll"><el-icon><Upload /></el-icon> 全部写入({{ dirtyCount }})</el-button>
+          <el-button size="small" type="primary" :disabled="!connected || busy" :loading="busy" @click="writeAll"><el-icon><Upload /></el-icon> 全部写入({{ dirtyCount }})</el-button>
+          <el-button size="small" type="warning" :disabled="!connected || busy" :loading="busy" @click="forceWriteAll"><el-icon><Promotion /></el-icon> 强制下发</el-button>
           <el-button size="small" @click="openTemplateDialog"><el-icon><FolderOpened /></el-icon> 导入配置</el-button>
           <el-button size="small" @click="saveAsTemplate"><el-icon><Files /></el-icon> 存为模板</el-button>
           <el-button size="small" @click="exportConfig"><el-icon><Download /></el-icon> 导出配置</el-button>
@@ -1518,22 +1519,30 @@ async function readAll() {
   else ElMessage.success('读取全部成功')
 }
 
-async function writeAll() {
-  if (!props.connected || !dirtyCount.value) return
-  // 只下发可写字段；位图字段共享同一寄存器需合并
-  const dirty = allFields.value.filter(
-    (f) => f.dirty && !f.customDisplay && !f.readOnly && !isBitSwitch(f) && f.index !== undefined && !f.needPassword,
-  )
-  if (!dirty.length) return
+// 把已导入模板涉及的字段重新标记为待下发（不改动其当前值），
+// 供「全部写入」复用：即使未手动修改参数，也能把模板值原样重发一遍。
+function markImportedDirty() {
+  const seen = new Set<number>()
+  for (const p of importedParams.value) {
+    if (seen.has(p.index)) continue
+    seen.add(p.index)
+    for (const f of allFields.value.filter((x) => x.index === p.index)) f.dirty = true
+  }
+}
+
+// 通用下发：对传入字段集合逐一下发，复用全部合成/密码/工厂逻辑。
+// 调用方决定字段集合（脏字段、或全部已读字段），本函数不判断 dirty。
+async function sendFields(fields: FieldState[]) {
+  if (!fields.length) return
   busy.value = true
   let ok = 0, fail = 0
   if (autoFactory.value && !inFactory.value) {
     const entered = await enterFactory()
     if (!entered) { busy.value = false; return }
   }
-  for (let i = 0; i < dirty.length; i++) {
-    progress.value = Math.round(((i) / dirty.length) * 100)
-    const f = dirty[i]
+  for (let i = 0; i < fields.length; i++) {
+    progress.value = Math.round(((i) / fields.length) * 100)
+    const f = fields[i]
     // 复合保护字段：只由 level part 代表整个寄存器合成下发，delay part 跳过
     if (f.kind === 'scd') {
       if (f.scdPart === 'delay') { f.status = 'ok'; continue }
@@ -1618,7 +1627,41 @@ async function writeAll() {
   if (autoFactory.value) await exitFactory()
   progress.value = 100
   busy.value = false
-  ElMessage[fail ? 'warning' : 'success'](`全部写入完成：${ok} 成功，${fail} 失败`)
+  ElMessage[fail ? 'warning' : 'success'](`参数下发完成：${ok} 成功，${fail} 失败`)
+}
+
+async function writeAll() {
+  if (!props.connected) return
+  // 导入模板后无需手动修改：把已导入模板涉及的字段重新标记为待下发，
+  // 这样「全部写入」在连接状态下始终可点，并能把模板值原样重发一遍（不依赖脏标记）。
+  if (importedParams.value.length) markImportedDirty()
+  if (!dirtyCount.value) { ElMessage.warning('暂无可下发的参数（请先导入模板或修改参数）'); return }
+  // 只下发可写字段；位图字段共享同一寄存器需合并
+  const dirty = allFields.value.filter(
+    (f) => f.dirty && !f.customDisplay && !f.readOnly && !isBitSwitch(f) && f.index !== undefined && !f.needPassword,
+  )
+  if (!dirty.length) return
+  await sendFields(dirty)
+}
+
+// 强制下发：把当前已读取/已显示的字段值全部下发一遍，不依赖脏标记。
+// 适用于「读出来后又想原样写回一遍」的场景（如参数被设备意外清零、或对照核验）。
+async function forceWriteAll() {
+  if (!props.connected) return
+  const fields = allFields.value.filter(
+    (f) => !f.customDisplay && !f.readOnly && !isBitSwitch(f) && f.index !== undefined && !f.needPassword,
+  )
+  if (!fields.length) { ElMessage.warning('暂无可下发的参数（请先读取设备参数）'); return }
+  try {
+    await ElMessageBox.confirm(
+      `即将把当前读取到的 ${fields.length} 项参数原样全部下发到设备，覆盖设备现有参数。确定继续吗？`,
+      '强制下发确认',
+      { type: 'warning', confirmButtonText: '确定下发', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await sendFields(fields)
 }
 
 // ====== 分组位图下发（用于功能设置/温度探头配置） ======
@@ -1764,7 +1807,16 @@ async function sendAllImported() {
     jbdBus.send(buildWriteParam(p.index, [(p.raw >> 8) & 0xff, p.raw & 0xff]))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
     if (!resp || resp.timeout || resp.status !== 0x00) { fail++; p.status = 'fail'; ElMessage.error(`写参数[${p.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`) }
-    else { ok++; p.status = 'ok'; const f = fieldByIndex(p.index); if (f) { f.status = 'ok'; f.dirty = false } }
+    else {
+      ok++
+      p.status = 'ok'
+      // 同一寄存器可能对应多个 UI 字段（如 scd 的 level/delay 两部分共享寄存器 40/41），
+      // 需一并标记为已下发，否则延时部分会残留"脏值"标记，看起来像没下发成功。
+      for (const f of allFields.value.filter((x) => x.index === p.index)) {
+        f.status = 'ok'
+        f.dirty = false
+      }
+    }
   }
   if (autoFactory.value) await exitFactory()
   progress.value = 100

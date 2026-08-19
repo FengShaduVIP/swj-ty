@@ -230,7 +230,7 @@ export function combineScd(level: number, delay: number): number {
 //     检流电阻未知（未读取寄存器28）时，按 DEFAULT_SHUNT_MOHM 估算以始终显示 A。
 // 二级过流保护值 (OCD_T → 内部单位：凹凸=A, 其余=mV)
 const OCD_MV: Record<number, number[]> = {
-  1: Array.from({ length: 16 }, (_, t) => 100 * t + 50),       // 凹凸 7717：50,150,250,...1550 **A**（截图核对）
+  1: Array.from({ length: 16 }, (_, t) => 10 * t + 5),       // 凹凸 7717
   2: Array.from({ length: 16 }, (_, t) => 20 * t + 10),       // 松下 49522 (mV)
   3: [20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 160, 180, 200],   // 中颖 309 (mV)
   4: [20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 160, 180, 200],   // 中颖 303（=309）(mV)
@@ -239,7 +239,7 @@ const OCD_MV: Record<number, number[]> = {
 }
 // 短路保护值 (SCD_T → 内部单位：凹凸=A, 其余=mV)
 const SCD_MV: Record<number, number[]> = {
-  1: Array.from({ length: 16 }, (_, t) => 200 * t + 200),     // 凹凸 7717：200,400,600,...3200 **A**（截图核对）
+  1: Array.from({ length: 16 }, (_, t) => 20 * t + 20),     // 凹凸 7717
   2: Array.from({ length: 16 }, (_, t) => 40 * t + 20),       // 松下 49522 (mV)
   3: [50, 80, 110, 140, 170, 200, 230, 260, 290, 320, 350, 400, 500, 600, 800, 1000],  // 中颖 309 (mV)
   4: [50, 80, 110, 140, 170, 200, 230, 260, 290, 320, 350, 400, 500, 600, 800, 1000],  // 中颖 303（=309）(mV)
@@ -248,7 +248,7 @@ const SCD_MV: Record<number, number[]> = {
 }
 // 二级过流延时 (OCD_D → mS)
 const OCD_DELAY_MS: Record<number, number[]> = {
-  1: Array.from({ length: 16 }, (_, d) => 500 * (d + 1)),      // 凹凸 7717：500,1000,...8000 **ms**（截图核对）
+  1: Array.from({ length: 16 }, (_, d) => 500 * (d + 1)),      // 凹凸 7717
   2: Array.from({ length: 16 }, (_, d) => 20 * d + 10),       // 松下 49522
   3: [50, 100, 200, 400, 600, 800, 1000, 2000, 4000, 6000, 8000, 10000, 15000, 20000, 30000, 40000],
   4: [50, 100, 200, 400, 600, 800, 1000, 2000, 4000, 6000, 8000, 10000, 15000, 20000, 30000, 40000], // 中颖 303（=309）
@@ -321,10 +321,10 @@ export const DEFAULT_SHUNT_MOHM = 0.1
 export function scdProtectLabel(param: ScdParam, chip: number | null, level: number, shuntMOhm: number): string {
   if (chip === 0) return `档${level} · TI专用`
   // 凹凸芯片：保护值直接是安培(A)
-  if (chip === 1) {
-    const amps = param === 'ocd' ? overcurrentMv(chip, level) : shortCircuitMv(chip, level)
-    return `档${level} · ${trimNum(amps, 1)} A`
-  }
+  // if (chip === 1) {
+  //   const amps = param === 'ocd' ? overcurrentMv(chip, level) : shortCircuitMv(chip, level)
+  //   return `档${level} · ${trimNum(amps, 1)} A`
+  // }
   // 其他芯片：mV → A（÷检流电阻；检流电阻未知时按默认值估算）
   const mv = param === 'ocd' ? overcurrentMv(chip, level) : shortCircuitMv(chip, level)
   const shunt = shuntMOhm > 0 ? shuntMOhm : DEFAULT_SHUNT_MOHM
