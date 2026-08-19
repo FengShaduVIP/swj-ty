@@ -160,7 +160,8 @@ const emit = defineEmits<{
   clear: []
 }>()
 
-const selectedPort = ref('')
+// 选中的串口与顶部栏共用同一份状态（topPort），保证两处下拉框选择一致
+const selectedPort = defineModel<string>('selectedPort', { default: '' })
 const baudRate = ref(9600)
 const dataBits = ref<5 | 6 | 7 | 8>(8)
 const stopBits = ref<1 | 1.5 | 2>(1)

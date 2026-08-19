@@ -772,10 +772,10 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
       { label: '放电过流保护', index: 25, unit: 'mA', decimals: 0, step: 10 },
       { label: '放电过流延时', index: 54, unit: 'S', decimals: 0 },
       { label: '放电过流恢复延时', index: 55, unit: 'S', decimals: 0 },
-      { label: '二级过流保护', index: 40, kind: 'scd', scdPart: 'level', note: '见IC' },
-      { label: '二级过流延时', index: 40, kind: 'scd', scdPart: 'delay', note: '见IC' },
-      { label: '短路保护', index: 41, kind: 'scd', scdPart: 'level', note: '见IC' },
-      { label: '短路保护延时', index: 41, kind: 'scd', scdPart: 'delay', note: '见IC' },
+      { label: '二级过流保护', index: 40, kind: 'scd', scdPart: 'level'},
+      { label: '二级过流延时', index: 40, kind: 'scd', scdPart: 'delay'},
+      { label: '短路保护', index: 41, kind: 'scd', scdPart: 'level' },
+      { label: '短路保护延时', index: 41, kind: 'scd', scdPart: 'delay'},
       { label: '短路释放延时', index: 43, unit: 'S', decimals: 0 },
     ],
   },
@@ -815,24 +815,22 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
       { label: '温度探头_8',  key: 'probe-8',  bitIndex: 30, bit: 7  },
     ],
   },
-  // 6. 均衡设置（5 项 / 3 列 × 2 行）
+  // 6. 均衡设置（4 项 / 3 列 × 2 行）
   {
     title: '均衡设置',
     order: 6,
     fields: [
-      { label: '均衡电流', key: 'bal-current', readOnly: true, note: '需协议补充' },
       { label: '均衡开启电压', index: 26, unit: 'mV', decimals: 0 },
       { label: '均衡开启压差', index: 27, unit: 'mV', decimals: 0 },
       { label: 'GPS关闭电压', index: 104, unit: 'mV', decimals: 0 },
       { label: 'GPS关闭延时', index: 105, unit: 'S', decimals: 0 },
     ],
   },
-  // 4. 系统设置（5 项 / 3 列 × 2 行）
+  // 4. 系统设置（4 项 / 3 列 × 2 行）
   {
     title: '系统设置',
     order: 4,
     fields: [
-      { label: '均衡电流', key: 'bal-current-2', readOnly: true, note: '需协议补充' },
       { label: '休眠时间', index: 122, unit: 'S', decimals: 0 },
       { label: '容量修正间隔', index: 113, unit: 'S', decimals: 0 },
       { label: '序列号', index: 6, customDisplay: 'serialRaw', readOnly: true },

@@ -135,6 +135,7 @@
             :connected="connected"
             :port-path="portPath"
             :ports="ports"
+            v-model:selected-port="topPort"
             :logs="dataLogs"
             @connect="handleConnect"
             @disconnect="handleDisconnect"

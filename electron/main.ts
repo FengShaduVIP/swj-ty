@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu } from 'electron'
 import { join } from 'path'
 import { SerialManager, type AutoConnectConfig } from './serial'
 
@@ -97,6 +97,8 @@ serialManager.onStatusChange((status: { connected: boolean; portPath?: string })
 // ======== App 生命周期 ========
 
 app.whenReady().then(() => {
+  // 去掉默认菜单栏（File/Edit/View 等），仅保留应用界面自身
+  Menu.setApplicationMenu(null)
   createWindow()
 
   app.on('activate', () => {
