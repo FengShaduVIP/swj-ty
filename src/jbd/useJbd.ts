@@ -383,9 +383,11 @@ function handleFrame(f: Frame) {
     case 0x05: hwVersion.value = parseHardwareVersion(f.data); break
     case 0xaa: protectCounts.value = parseProtectCounts(f.data); break
     case 0xf6: internalRes.value = parseInternalRes(f.data); break
-    // 芯片类型：协议规定一个数据字节，但部分 BMS 固件会返回 2 字节（前导 0x00 + 类型值），
-    // 取最后一个字节作为真正的芯片类型，兼容 len=1 和 len=2 两种响应。
-    case 0x00: chipType.value = f.data.length ? f.data[f.data.length - 1] : null; break
+    // 芯片类型：命令字 0x00 被「读芯片类型」与「进厂指令(写 0x00)」共用。
+    // 读响应携带数据字节（1~2 字节，取最后一个为真实类型）；进厂写指令的 ACK 无数据载荷。
+    // 因此绝不能以"收到 0x00 帧"来清空 chipType——否则强制下发等进厂动作会把芯片类型误清空，
+    // 导致二级过流/短路保护下拉框被禁用。只有带数据的 0x00 帧才更新 chipType。
+    case 0x00: if (f.data.length) chipType.value = f.data[f.data.length - 1]; break
     case 0xfa:
       if (f.data.length >= 3) {
         const reg = (f.data[0] << 8) | f.data[1]
