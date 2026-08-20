@@ -1439,6 +1439,11 @@ async function readAll() {
   if (!props.connected) return
   busy.value = true
   progress.value = 0
+  // 默认第一条指令：先读取芯片类型。芯片方案决定二级过流/短路保护下拉的档位物理量，
+  // 必须先于参数批量读，避免 SCD 选项因未知芯片而显示 0.00A 误导用户；同时每次读取全部
+  // 都强制重读一遍，确保芯片方案是最新识别结果。
+  j.chipType.value = null
+  await j.readChip()
   // 收集所有字段实际依赖的寄存器（去重）
   const regSet = new Set<number>()
   for (const f of allFields.value) {

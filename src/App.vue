@@ -142,12 +142,9 @@
             @refresh="handleRefreshPorts"
             @clear="dataLogs = []"
           />
-          <JbdPanel v-show="ui.protocol === 'jbd' && active === 'monitor'" :connected="connected" />
-          <JbdControl v-show="ui.protocol === 'jbd' && active === 'control'" :connected="connected" />
-          <JbdParamConfig v-show="ui.protocol === 'jbd' && active === 'config'" :connected="connected" />
-          <TianyiPanel v-show="ui.protocol === 'tianyi' && active === 'monitor'" :connected="connected" />
-          <TianyiParamConfig v-show="ui.protocol === 'tianyi' && active === 'config'" :connected="connected" />
-          <TianyiFirmware v-show="ui.protocol === 'tianyi' && active === 'control'" :connected="connected" />
+          <JbdPanel v-show="active === 'monitor'" :connected="connected" />
+          <JbdControl v-show="active === 'control'" :connected="connected" />
+          <JbdParamConfig v-show="active === 'config'" :connected="connected" />
         </section>
       </main>
     </div>
@@ -236,17 +233,11 @@ import SerialPanel from './components/SerialPanel.vue'
 import JbdPanel from './components/JbdPanel.vue'
 import JbdControl from './components/JbdControl.vue'
 import JbdParamConfig from './components/JbdParamConfig.vue'
-import TianyiPanel from './components/TianyiPanel.vue'
-import TianyiParamConfig from './components/TianyiParamConfig.vue'
-import TianyiFirmware from './components/TianyiFirmware.vue'
 import ConnIndicator from './components/ConnIndicator.vue'
-import { ui, setConnected, setConnecting, setDisconnected, markCommError, type ProtocolId } from './store'
+import { ui, setConnected, setConnecting, setDisconnected, markCommError } from './store'
 import { jbdBus } from './jbd/jbd-bus'
 import { describeFrame as describeJbdFrame } from './jbd/jbd-protocol'
 import { useJbd } from './jbd/useJbd'
-import { tianyiBus } from './tianyi/tianyi-bus'
-import { describeFrame as describeTianyiFrame } from './tianyi/tianyi-protocol'
-import { useTianyi } from './tianyi/useTianyi'
 import pkg from '../package.json'
 import { LOG_MAX_LINES } from './constants'
 
@@ -265,22 +256,9 @@ const JBD_VIEWS = markRaw<ViewDef[]>([
   { key: 'config',  title: '参数配置', hint: '读写 0xFA 保护参数寄存器（支持导入/导出）', icon: Operation },
   { key: 'control', title: '设备控制', hint: '可写操作：MOS 控制、控制指令、参数读写、密码与加热', icon: Tools },
 ])
-const TIANYI_VIEWS = markRaw<ViewDef[]>([
-  { key: 'connect', title: '设备连接', hint: '配置串口参数并建立与 BMS 的通信链路', icon: Connection },
-  { key: 'monitor', title: '实时监测', hint: '只读遥测：电池信息、单体电压、温度、保护与告警状态', icon: DataBoard },
-  { key: 'config',  title: '参数下发', hint: '读写 Modbus 保持寄存器：配置 / 保护 / 校准 / 休眠', icon: Operation },
-  { key: 'control', title: '固件升级', hint: 'Modbus OTA 固件升级（握手 / 分包传输 / 跳转）', icon: Tools },
-])
-const views = computed(() => (ui.protocol === 'jbd' ? JBD_VIEWS : TIANYI_VIEWS))
+const views = JBD_VIEWS
 const active = ref('monitor')
-const activeView = computed(() => views.value.find((v) => v.key === active.value)!)
-
-// 协议切换时，若当前页在新协议下不存在则回到监测页
-watch(() => ui.protocol, (p: ProtocolId, old: ProtocolId) => {
-  if (p === old) return
-  const exists = views.value.some((v) => v.key === active.value)
-  if (!exists) active.value = 'monitor'
-})
+const activeView = computed(() => views.find((v) => v.key === active.value)!)
 
 // ===== Rail 折叠（持久化 · Ctrl+B）=====
 const collapsed = ref(localStorage.getItem('vg_rail_collapsed') === '1')
@@ -369,7 +347,7 @@ async function handleSend(data: number[]) {
   try {
     await window.serialAPI.send(data)
     const hex = data.map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
-    const desc = ui.protocol === 'jbd' ? describeJbdFrame(data) : describeTianyiFrame(data)
+    const desc = describeJbdFrame(data)
     const prefix = desc ? `${desc}-->主机发送：` : '发送: '
     addLog('send', `${prefix}${hex}`)
   } catch (err: any) {
@@ -432,7 +410,6 @@ function onSettingsClose() {
 
 // ===== 连接成功后验证 BMS 应答再跳转实时监测页 =====
 const { basicInfo, readBasic } = useJbd()
-const { onConnChange: tianyiOnConnChange } = useTianyi()
 const pendingVerify = ref(false)
 const pendingJump = ref(false)
 let verifyTimer: ReturnType<typeof setTimeout> | null = null
@@ -478,23 +455,12 @@ function handleStatusChange(status: SerialStatus) {
   if (status.connected) {
     portPath.value = status.portPath || ''
     setConnected(status.portPath || '', ui.baudRate)
-    if (ui.protocol === 'jbd') {
-      jbdBus.setConnected(true)
-      tianyiBus.setConnected(false)
-      // 仅自动连接成功才验证后跳转；手动连接只验证、不跳转
-      startVerify(!!status.auto)
-    } else {
-      jbdBus.setConnected(false)
-      tianyiBus.setConnected(true)
-      tianyiOnConnChange(true)
-      // 天一协议：自动连接成功也跳转到实时监测页
-      if (status.auto) active.value = 'monitor'
-    }
+    jbdBus.setConnected(true)
+    // 仅自动连接成功才验证后跳转；手动连接只验证、不跳转
+    startVerify(!!status.auto)
   } else {
     setDisconnected()
     jbdBus.setConnected(false)
-    tianyiBus.setConnected(false)
-    tianyiOnConnChange(false)
     pendingVerify.value = false
     pendingJump.value = false
   }
@@ -544,18 +510,13 @@ onMounted(() => {
   // 关键：把帧总线接到真实串口。否则 jbdBus.send/sendAck 发现 sender 为 null，
   // 会立即返回超时帧，表现为「发送数据没有成功 / 读不到应答」。
   jbdBus.setSender(handleSend)
-  tianyiBus.setSender(handleSend)
 
   window.serialAPI?.onData?.((data: number[]) => {
     const bytes = Array.from(data)
     const hex = bytes.map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
     addLog('recv', `接收: ${hex}`)
-    // 按当前协议把原始字节喂给对应帧总线
-    if (ui.protocol === 'jbd') {
-      jbdBus.feed(bytes)
-    } else {
-      tianyiBus.feed(bytes)
-    }
+    // 把原始字节喂给 JBD 帧总线
+    jbdBus.feed(bytes)
   })
   window.serialAPI?.onError?.((error: string) => {
     addLog('error', error)
@@ -573,7 +534,6 @@ onUnmounted(() => {
   if (tickTimer) clearInterval(tickTimer)
   window.serialAPI?.removeAllListeners?.()
   jbdBus.clear()
-  tianyiBus.clear()
 })
 </script>
 

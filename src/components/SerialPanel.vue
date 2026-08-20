@@ -15,21 +15,6 @@
                          :label="ui.conn === 'connected' ? '链路正常' : (ui.conn === 'error' ? '链路异常' : '离线')" />
           </div>
 
-          <!-- 协议选择 -->
-          <div class="form-group">
-            <label>通讯协议</label>
-            <el-select v-model="ui.protocol" :disabled="connected" style="width: 100%" @change="onProtocolChange">
-              <el-option label="嘉佰达 (JBD)" value="jbd" />
-              <el-option label="天一 (Modbus-RTU)" value="tianyi" />
-            </el-select>
-          </div>
-
-          <!-- 从机地址（仅天一） -->
-          <div v-if="ui.protocol === 'tianyi'" class="form-group">
-            <label>从机地址</label>
-            <el-input-number v-model="ui.slaveAddr" :disabled="connected" :min="1" :max="247" controls-position="right" style="width: 100%" />
-          </div>
-
           <!-- 串口号 -->
           <div class="form-group">
             <label>串口号</label>
@@ -135,7 +120,7 @@ import { Setting, Link, SwitchButton } from '@element-plus/icons-vue'
 import DataLog from './DataLog.vue'
 import ConnIndicator from './ConnIndicator.vue'
 import StatusBadge from './StatusBadge.vue'
-import { ui, setProtocol, setSlaveAddr } from '@/store'
+import { ui } from '@/store'
 
 interface LogEntry {
   time: string
@@ -177,21 +162,15 @@ const parityLabel = computed(() => {
 
 const metaRows = computed(() => {
   const rows = [
-    { k: '协议', v: ui.protocol === 'jbd' ? '嘉佰达 (JBD)' : '天一 (Modbus-RTU)' },
+    { k: '协议', v: '嘉佰达 (JBD)' },
     { k: '串口', v: props.portPath || selectedPort.value || '--' },
     { k: '波特率', v: baudRate.value.toString() },
     { k: '数据位', v: dataBits.value.toString() },
     { k: '停止位', v: stopBits.value.toString() },
     { k: '校验位', v: parityLabel.value },
   ]
-  if (ui.protocol === 'tianyi') rows.splice(1, 0, { k: '从机地址', v: ui.slaveAddr.toString() })
   return rows
 })
-
-function onProtocolChange() {
-  // 切换协议时同步到 store；默认天一协议波特率 9600
-  if (ui.protocol === 'tianyi' && baudRate.value !== 9600) baudRate.value = 9600
-}
 
 function refreshPorts() { emit('refresh') }
 
