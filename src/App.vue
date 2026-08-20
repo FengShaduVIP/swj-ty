@@ -145,6 +145,7 @@
           <JbdPanel v-show="active === 'monitor'" :connected="connected" />
           <JbdControl v-show="active === 'control'" :connected="connected" />
           <JbdParamConfig v-show="active === 'config'" :connected="connected" />
+          <DispatchLog v-show="active === 'log'" />
         </section>
       </main>
     </div>
@@ -228,11 +229,12 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, markRaw } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Connection, DataBoard, Setting, Fold, Expand, Operation, Tools, Refresh } from '@element-plus/icons-vue'
+import { Connection, DataBoard, Setting, Fold, Expand, Operation, Tools, Refresh, Tickets } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
 import JbdPanel from './components/JbdPanel.vue'
 import JbdControl from './components/JbdControl.vue'
 import JbdParamConfig from './components/JbdParamConfig.vue'
+import DispatchLog from './components/DispatchLog.vue'
 import ConnIndicator from './components/ConnIndicator.vue'
 import { ui, setConnected, setConnecting, setDisconnected, markCommError } from './store'
 import { jbdBus } from './jbd/jbd-bus'
@@ -255,6 +257,7 @@ const JBD_VIEWS = markRaw<ViewDef[]>([
   { key: 'monitor', title: '实时监测', hint: '只读遥测：基本信息、趋势曲线、单体电压分布与内阻', icon: DataBoard },
   { key: 'config',  title: '参数配置', hint: '读写 0xFA 保护参数寄存器（支持导入/导出）', icon: Operation },
   { key: 'control', title: '设备控制', hint: '可写操作：MOS 控制、控制指令、参数读写、密码与加热', icon: Tools },
+  { key: 'log',     title: '下发记录', hint: '强制下发的本地历史记录（时间 / 蓝牙名称 / 具体参数），可查询与导出', icon: Tickets },
 ])
 const views = JBD_VIEWS
 const active = ref('monitor')

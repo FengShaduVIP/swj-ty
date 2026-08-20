@@ -331,6 +331,7 @@ import {
 } from '@/jbd/jbd-protocol'
 import { paramRawToDisplay, paramDisplayToRaw, paramFormat, paramDisplayDecimals, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs, isChipScdKnown } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
+import { addDispatchRecord, type DispatchParam } from '@/db/dispatchLog'
 import StatusBadge from './StatusBadge.vue'
 
 type FieldStatus = 'idle' | 'reading' | 'writing' | 'ok' | 'fail'
@@ -1144,6 +1145,8 @@ async function readField(f: FieldState): Promise<boolean> {
     return true
   }
   // ASCII 块：读 N 个寄存器
+  // 蓝牙名称(index 88)读取即 0xFA 88~103 条形码信息，显示其条形码数值；
+  // 仅下发蓝牙名称时才使用专用 0xA2 指令（见 sendFields 写分支）。
   if (f.ascii) {
     const len = f.ascii_len ?? 8
     jbdBus.send(buildReadParam(f.index!, len))
@@ -1667,6 +1670,16 @@ async function forceWriteAll() {
     return
   }
   await sendFields(fields)
+  // 落地：把本次强制下发的参数快照写入本地记录库（时间 + 蓝牙名称 + 具体参数）
+  const btField = fields.find((f) => f.key === 'bt-name')
+  const btName = btField && btField.value != null ? String(btField.value) : '—'
+  const params: DispatchParam[] = fields.map((f) => ({
+    label: f.label,
+    index: f.index,
+    value: f.value,
+  }))
+  addDispatchRecord({ btName, params })
+  ElMessage.info('已记录本次强制下发到本地历史')
 }
 
 // ====== 分组位图下发（用于功能设置/温度探头配置） ======
