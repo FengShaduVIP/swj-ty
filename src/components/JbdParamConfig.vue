@@ -1669,6 +1669,11 @@ async function forceWriteAll() {
   } catch {
     return
   }
+  // 下发前重读芯片类型（不读参数、不动页面 f.value）：换电池不重连时 chipType 仍是
+  // 上一台的缓存，会导致二级过流/短路下拉框用错档位表。重读确保档位解释对应当前电池，
+  // 同时页面模板参数值保持不变，支持用同一套参数反复下发多组电池。
+  j.chipType.value = null
+  await j.readChip()
   await sendFields(fields)
   // 落地：把本次强制下发的参数快照写入本地记录库（时间 + 蓝牙名称 + 具体参数）
   const btField = fields.find((f) => f.key === 'bt-name')
