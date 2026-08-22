@@ -10,7 +10,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "hw:smoke": "vitest run --config vitest.hw.config.ts",
+    "hw:smoke": "vitest run --config vitest.hw.config.ts scripts/hw-smoke.hw.ts",
+    "hw:full": "vitest run --config vitest.hw.config.ts scripts/hw-full.hw.ts",
     "electron:dev": "vite",
     "electron:build": "vite build && electron-builder",
     "electron:build:win": "vite build && electron-builder --win"

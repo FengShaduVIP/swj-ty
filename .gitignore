@@ -3,6 +3,7 @@ dist/
 dist-electron/
 dist-win/
 release/
+test-reports/
 *.log
 .DS_Store
 /.idea/
