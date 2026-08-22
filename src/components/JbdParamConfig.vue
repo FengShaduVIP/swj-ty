@@ -398,6 +398,13 @@ function customDisplayValue(f: FieldState): string {
   if (f.customDisplay === 'serialRaw' && f.value !== null && f.value !== undefined) {
     return '0x' + ((f.value & 0xffff).toString(16).toUpperCase().padStart(4, '0'))
   }
+  // 电池SN码：标准上位机取蓝牙名称块字符串（寄存器区唯一 ASCII 块，见 groupDefs 注释）
+  if (f.customDisplay === 'sn') return btNameOf()
+  // BMS版本号：标准上位机显示 0x03 固件版本号去掉小数点（"8.0" → 80），非寄存器 72 ASCII 块
+  if (f.customDisplay === 'swVersion') {
+    const v = j.basicInfo.value?.swVersion
+    return v ? v.replace('.', '') : '—'
+  }
   return '—'
 }
 
@@ -1125,8 +1132,15 @@ function planReadUnits(fields: FieldState[]): { units: FieldState[]; skip: numbe
   return { units, skip }
 }
 
+/** BMS版本号（customDisplay swVersion）取自 0x03 基本信息帧；
+ *  参数页本身不轮询 0x03，读取动作触发前补发一次（响应由 useJbd 单例帧订阅回填）。 */
+function ensureBasicInfo() {
+  if (props.connected && !j.basicInfo.value) j.readBasic()
+}
+
 async function readGroup(g: { title: string; fields: FieldState[] }) {
   if (!props.connected) return
+  ensureBasicInfo()
   const { units, skip } = planReadUnits(g.fields)
   busy.value = true
   let ok = 0, fail = 0
@@ -1234,6 +1248,7 @@ async function readAll() {
   // 都强制重读一遍，确保芯片方案是最新识别结果。
   j.chipType.value = null
   await j.readChip()
+  ensureBasicInfo()
   // 收集所有字段实际依赖的寄存器（去重）。
   // ASCII 字段（蓝牙名称等）设备对大跨度批量读易返回错位数据；scd 复合保护字段
   // （寄存器 40/41）与相邻寄存器合并批量读会错位——两者均不走批量，改下方单读。
@@ -1311,11 +1326,10 @@ function markImportedDirty() {
 // ====== 下发记录（所有写设备的入口统一留痕，见 db/dispatchLog.ts） ======
 /** 当前设备上下文：芯片类型 / 电池SN / 软件版本 / 串口，用于追溯“下发给哪块电池” */
 function dispatchCtx() {
-  const snField = allFields.value.find((f) => f.key === 'sn')
-  const snVal = snField?.value
+  const sn = btNameOf()
   return {
     chipTypeName: j.chipType.value != null ? j.chipTypeName.value : undefined,
-    sn: typeof snVal === 'number' ? '0x' + (snVal & 0xffff).toString(16).toUpperCase().padStart(4, '0') : undefined,
+    sn: sn !== '—' ? sn : undefined,
     swVersion: j.basicInfo.value?.swVersion || undefined,
     portPath: ui.portPath || undefined,
   }
@@ -1522,6 +1536,7 @@ async function forceWriteAll() {
   // 同时页面模板参数值保持不变，支持用同一套参数反复下发多组电池。
   j.chipType.value = null
   await j.readChip()
+  ensureBasicInfo()
   const summary = await sendFields(fields)
   // 落地：把本次强制下发的参数快照与结果写入本地记录库
   //（时间 / 蓝牙名称 / 设备上下文 / 逐参数下发+校验结果）

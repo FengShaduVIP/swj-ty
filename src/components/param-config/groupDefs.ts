@@ -4,7 +4,7 @@
  */
 
 export type FieldStatus = 'idle' | 'reading' | 'writing' | 'ok' | 'fail'
-export type CustomDisplayKind = 'chipType' | 'hwVersion' | 'ntcCount' | 'balanceMode' | 'date' | 'serialRaw'
+export type CustomDisplayKind = 'chipType' | 'hwVersion' | 'ntcCount' | 'balanceMode' | 'date' | 'serialRaw' | 'sn' | 'swVersion'
 
 export interface FieldDef {
   label: string
@@ -60,16 +60,21 @@ export function makeField(def: FieldDef): FieldState {
 // ====== 分组定义（1 排 2 列瀑布流布局，每组内字段 3 列网格，共 11 组） ======
 export const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupAction; fields: FieldDef[] }[] = [
   // 1. 基本设置（12 项 / 3 列 × 4 行）
+  // 显示名称对齐标准上位机（嘉佰达物联云）：电池生产商 / BMS版本号。
+  // 电池SN码：真机全量扫描（scripts/hw-scan.hw.ts）证实寄存器区唯一 ASCII 字符串
+  // 是蓝牙名称块（88~103），标准工具的 SN 即取自该块，故此处随蓝牙名称联动显示。
+  // BMS版本号：标准工具显示 0x03 基本信息里的固件版本号去点形式（8.0 → 80），
+  // 而非寄存器 72 的 ASCII 块（本机实测为 "www"）。
   {
     title: '基本设置',
     order: 1,
     fields: [
       { label: '蓝牙名称', key: 'bt-name', index: 88, ascii: true, ascii_len: 16, fullWidth: true, resetMcu: true },
       { label: '芯片类型', key: 'chip-type', customDisplay: 'chipType' },
-      { label: '电池SN码', key: 'sn', index: 6, customDisplay: 'serialRaw', readOnly: true },
+      { label: '电池SN码', key: 'sn', customDisplay: 'sn', readOnly: true },
       { label: '电池型号', key: 'battery-model', index: 158, ascii: true, ascii_len: 12, readOnly: true },
-      { label: '生产厂商信息', key: 'mfr', index: 56, ascii: true, ascii_len: 16 },
-      { label: 'BMS编码信息', key: 'bms-ver', index: 72, ascii: true, ascii_len: 16 },
+      { label: '电池生产商', key: 'mfr', index: 56, ascii: true, ascii_len: 16 },
+      { label: 'BMS版本号', key: 'sw-version', customDisplay: 'swVersion', readOnly: true },
       { label: 'BMS型号', key: 'bms-hw-name', index: 176, ascii: true, ascii_len: 8, readOnly: true },
       { label: '生产日期', key: 'prod-date', index: 5, customDisplay: 'date' },
       { label: '额定充电电压', index: 117, unit: 'V', decimals: 1, step: 0.1 },

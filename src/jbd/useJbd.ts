@@ -24,8 +24,8 @@ const protectCounts = ref<Record<string, number>>({})
 const chipType = ref<number | null>(null)
 const chipTypeName = computed(() => {
   if (chipType.value == null) return '—'
-  const name = CHIP_TYPES[chipType.value] ?? '未知方案'
-  return `${name} (0x${chipType.value.toString(16).padStart(2, '0')})`
+  // 标准上位机只显示芯片方案名（无 0x 编号后缀）；编号见串口日志
+  return CHIP_TYPES[chipType.value] ?? '未知方案'
 })
 const ackHistory = ref<string[]>([])
 const autoPollProxy = ref(false)

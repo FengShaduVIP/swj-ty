@@ -9,5 +9,7 @@ export default defineConfig({
     testTimeout: 60_000,
     hookTimeout: 15_000,
     reporters: 'default',
+    // 串口是独占资源：hw 测试文件必须串行执行，禁止并行池抢占 COM 口
+    fileParallelism: false,
   },
 })

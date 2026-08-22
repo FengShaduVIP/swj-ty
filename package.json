@@ -14,7 +14,8 @@
     "hw:full": "vitest run --config vitest.hw.config.ts scripts/hw-full.hw.ts",
     "electron:dev": "vite",
     "electron:build": "vite build && electron-builder",
-    "electron:build:win": "vite build && electron-builder --win"
+    "electron:build:win": "vite build && electron-builder --win",
+    "hw:scan": "vitest run --config vitest.hw.config.ts scripts/hw-scan.hw.ts"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
