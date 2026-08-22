@@ -1357,16 +1357,22 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
     return
   }
   // 其余字段：复用 readField（已内建 1500ms 超时），失败重试两次吸收批量帧拥挤超时
+  // ASCII 字段特殊处理：readField 回读可能把 f.value 覆写为空（parseAsciiResponse
+  // 对 BMS 编码信息等大跨度 ASCII 块校验失败返回空串），故比对前保存用户原值，
+  // 校验失败时只标红、并恢复 f.value 为用户原下发内容，避免界面显示为空。
+  const savedValue = f.value
   let okRead = await readField(f)
   if (!okRead) okRead = await readField(f)
   if (!okRead) okRead = await readField(f)
   if (!okRead) {
+    f.value = savedValue
     failBoth('读取超时或无响应（设备未正确返回下发结果）')
     return
   }
   const got = currentExpectLike(f)
   const diff = diffMessage(f, exp, got)
   if (diff) {
+    f.value = savedValue
     failBoth(diff)
   } else {
     passBoth()

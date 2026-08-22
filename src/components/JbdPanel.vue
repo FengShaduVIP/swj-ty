@@ -55,6 +55,13 @@
                   </span>
                 </div>
                 <div class="kv">
+                  <span class="kv-label">满充容量</span>
+                  <span class="kv-num">
+                    <span class="num">{{ fmt(fullChargeAh, 2) }}</span>
+                    <span class="kv-unit">AH</span>
+                  </span>
+                </div>
+                <div class="kv">
                   <span class="kv-label">负载功率</span>
                   <span class="kv-num">
                     <span class="num">{{ fmt(powerW, 2) }}</span>
@@ -211,6 +218,7 @@ const {
 const totalV   = computed(() => basicInfo.value ? basicInfo.value.totalVoltage_mV / 1000 : NaN)
 const currentA = computed(() => basicInfo.value ? basicInfo.value.current_mA / 1000 : NaN)
 const remainAh = computed(() => basicInfo.value ? basicInfo.value.remainingCapacity_mAh / 1000 : NaN)
+const fullChargeAh = computed(() => basicInfo.value?.fullChargeCapacity_mAh != null ? basicInfo.value.fullChargeCapacity_mAh / 1000 : NaN)
 const cycleCount = computed(() => basicInfo.value?.cycleCount ?? 0)
 const powerW   = computed(() => (Number.isFinite(totalV.value) && Number.isFinite(currentA.value)) ? totalV.value * currentA.value : NaN)
 const rsoc     = computed(() => basicInfo.value?.rsoc ?? 0)
