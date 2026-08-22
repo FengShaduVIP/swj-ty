@@ -1131,6 +1131,11 @@ async function readField(f: FieldState): Promise<boolean> {
     ElMessage.warning(`[${f.label}] 无可读取寄存器`)
     return false
   }
+  // scd 复合保护字段读取前需先发送芯片指令(CMD.CHIP_TYPE+密码)解锁设备，
+  // 否则设备可能返回缓存旧值/未解锁默认值（与 readAll→readChip 对齐）。
+  if (f.kind === 'scd' && autoFactory.value && !inFactory.value) {
+    await enterFactory()
+  }
   f.status = 'reading'
   // 位开关：读一次位图，所有同位图字段同步
   if (isBitSwitch(f)) {
@@ -1320,21 +1325,29 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
     f.dirty = false
     if (peer) { peer.status = 'ok'; peer.dirty = false }
   }
-  // scd 字段：直接读整寄存器原始值比对，避免依赖 readField 对 peer.value 的回写时序
-  // （强制下发批量帧密集时，readField 的 peer 同步与 captureExpect 易产生竞态，导致误报）。
-  // 校验策略：完整比对 level（保护值）与 delay（延时）档位（均按 0~15 档位值比对），
+  // scd 字段：复用 readField 回读（与「读取全部」同源、已验证可靠回填 UI），
+  // 直接比对 readField 写回的 f.value / peer.value（即 UI 显示的档位），
+  // 不再并行发独立读帧抢总线（批量下发场景下多 0xfa 等待器并发易抢错帧）。
+  // 校验策略：完整比对 level（保护值）与 delay（延时）档位（均按 0~15 档位值），
   // 任一不一致即判为校验失败并标红，如实反馈设备未接受该值。
   if (f.kind === 'scd' && f.index !== undefined) {
-    const raw = await readScdRawRetry(f.index)
-    if (raw === null) {
+    const okRead = await readField(f)
+    if (!okRead) {
       failBoth('读取超时或无响应（设备未正确返回下发结果）')
       return
     }
-    const { level: gotL, delay: gotD } = splitScd(raw)
-    const eL = (exp.raw! >> 4) & 0x0f
-    const eD = exp.raw! & 0x0f
-    if (gotL !== eL || gotD !== eD) {
-      failBoth(`下发值与读取不一致：下发(level=0x${eL.toString(16)} delay=0x${eD.toString(16)}) 读取(level=0x${gotL.toString(16)} delay=0x${gotD.toString(16)})`)
+    // readField 已把 f.value / peer.value 设为回读档位（UI 显示值）
+    const selfGot = Number(f.value ?? 0)
+    const peerGot = peer ? Number(peer.value ?? 0) : 0
+    // 期望值：从 exp.raw 按当前字段的 scdPart 取对应档位
+    const expSelf = f.scdPart === 'level'
+      ? (exp.raw! >> 4) & 0x0f   // level 在高 4 位
+      : (exp.raw! & 0x0f)        // delay 在低 4 位
+    const gotSelf = f.scdPart === 'level' ? selfGot : peerGot
+    if (gotSelf !== expSelf) {
+      const eL = (exp.raw! >> 4) & 0x0f
+      const eD = exp.raw! & 0x0f
+      failBoth(`下发值与读取不一致：下发(${f.scdPart === 'level' ? '保护值' : '延时'}档=0x${expSelf.toString(16)}) 读取(档=0x${gotSelf.toString(16)}）[整寄存器: 下发 level=0x${eL.toString(16)} delay=0x${eD.toString(16)}]`)
       return
     }
     passBoth()
