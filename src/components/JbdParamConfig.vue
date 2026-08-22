@@ -1215,8 +1215,131 @@ function markWriteOk(f: FieldState): true {
   return true
 }
 
+// ====== 下发后自动回读校验 ======
+// 触发：普通下发(writeField) 与 强制/全部下发(sendFields) 中每次字段写入成功后。
+// 流程：写入前已捕获「期望值快照」→ 写入成功后自动发一次读取指令(readField，内建 1500ms 超时)
+//      → 比较期望值与读取回来的数值是否一致；不一致/超时/读取失败 → 字段 status='fail'(行内标红)
+//      + ElMessage.error 明确文案，便于定位问题。
+// 回读复用已验证可靠的单参数逐读路径(readField)，规避设备对 ASCII 块(88~103)/scd 复合寄存器
+// 大跨度批量读返回错位数据的问题；超时机制由 readField 的 onceResponse(1500, 0xfa) 提供。
+
+export interface WriteExpect {
+  /** 写入前捕获的期望「显示值」(数值/scd 档位/date/serialRaw) */
+  display?: any
+  /** 写入前捕获的期望 ASCII 文本（ascii 字段） */
+  ascii?: string
+  /** 写入前捕获的期望原始 16 位值（scd 组合 / options / 普通数值回退比对） */
+  raw?: number
+}
+
+/** 捕获字段「写入前」的期望值快照，供写入成功后回读校验比对。
+ *  必须在 send/write 指令发出之前调用（写入成功后 readField 会改写 f.value）。 */
+function captureExpect(f: FieldState): WriteExpect {
+  if (f.ascii) return { ascii: String(f.value ?? '') }
+  if (f.kind === 'scd') {
+    const peer = scdPeer(f)
+    const peerVal = peer && peer.value != null ? Number(peer.value) : 0
+    const selfVal = f.value != null ? Number(f.value) : 0
+    const level = f.scdPart === 'level' ? selfVal : peerVal
+    const delay = f.scdPart === 'delay' ? selfVal : peerVal
+    return { raw: combineScd(level, delay) & 0xffff }
+  }
+  if (f.options) return { raw: Number(f.value ?? 0) & 0xffff }
+  // 普通数值 / date / serialRaw：保存显示值，比对时换算回 raw 再比，容忍展示精度误差
+  if (f.index !== undefined) {
+    const dv = paramDisplayToRaw(f.index, f.value)
+    return { display: f.value, raw: dv & 0xffff }
+  }
+  return { display: f.value }
+}
+
+/** 把字段当前回读值解析为一个可比对的值（与 captureExpect 同口径） */
+function currentExpectLike(f: FieldState): WriteExpect {
+  if (f.ascii) return { ascii: String(f.value ?? '') }
+  if (f.kind === 'scd') {
+    const peer = scdPeer(f)
+    const peerVal = peer && peer.value != null ? Number(peer.value) : 0
+    const selfVal = f.value != null ? Number(f.value) : 0
+    const level = f.scdPart === 'level' ? selfVal : peerVal
+    const delay = f.scdPart === 'delay' ? selfVal : peerVal
+    return { raw: combineScd(level, delay) & 0xffff }
+  }
+  if (f.options) return { raw: Number(f.value ?? 0) & 0xffff }
+  if (f.index !== undefined) {
+    const dv = paramDisplayToRaw(f.index, f.value)
+    return { display: f.value, raw: dv & 0xffff }
+  }
+  return { display: f.value }
+}
+
+/** 比对期望值与回读值；返回 null 表示一致，否则返回明确的异常描述。 */
+function diffMessage(f: FieldState, exp: WriteExpect, got: WriteExpect): string | null {
+  // 1) ASCII：直接比文本
+  if (f.ascii) {
+    const e = (exp.ascii ?? '').trim()
+    const g = (got.ascii ?? '').trim()
+    if (e === g) return null
+    return `下发值与读取不一致：下发「${e}」 读取「${g}」（ASCII 参数）`
+  }
+  // 2) 其余：优先比 raw（规避浮点展示误差），再比 display
+  const er = exp.raw
+  const gr = got.raw
+  if (er !== undefined && gr !== undefined && er !== gr) {
+    return `下发值与读取不一致：下发 0x${er.toString(16).toUpperCase().padStart(4, '0')} 读取 0x${gr.toString(16).toUpperCase().padStart(4, '0')}`
+  }
+  // raw 缺失时回退比对显示值（数值型允许展示精度截断，故仅当差异超出 1e-6 才报）
+  const ed = exp.display
+  const gd = got.display
+  if (ed !== undefined && gd !== undefined && typeof ed === 'number' && typeof gd === 'number') {
+    if (Math.abs(Number(ed) - Number(gd)) > 1e-6) {
+      return `下发值与读取不一致：下发 ${ed} 读取 ${gd}`
+    }
+  }
+  return null
+}
+
+/** 下发成功后自动回读校验：
+ *  - 先发一次读取指令(readField，内建 1500ms 超时)；超时/失败 → 视为校验未通过；
+ *  - 比对期望值与读取值，不一致 → 行内标红(status='fail') + 明确错误提示；
+ *  - 一致 → 保持 status='ok'，不额外打扰用户。
+ * 注：readField 本身会把读取结果写回 f.value，故比对用的「回读值」取自 readField 之后的 f。 */
+async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
+  // scd 复合字段：整寄存器由 level part 代表写入，校验失败需把 delay part(peer) 一并标红
+  const peer = f.kind === 'scd' ? scdPeer(f) : undefined
+  const failBoth = (msg: string) => {
+    f.status = 'fail'
+    f.dirty = true
+    if (peer) { peer.status = 'fail'; peer.dirty = true }
+    ElMessage.error(`校验失败[${f.label}]：${msg}`)
+  }
+  const okRead = await readField(f)
+  if (!okRead) {
+    failBoth('读取超时或无响应（设备未正确返回下发结果）')
+    return
+  }
+  const got = currentExpectLike(f)
+  const diff = diffMessage(f, exp, got)
+  if (diff) {
+    failBoth(diff)
+  } else {
+    f.status = 'ok'
+    f.dirty = false
+    if (peer) { peer.status = 'ok'; peer.dirty = false }
+  }
+}
+
+/** 下发成功后立即标记 ok，并异步触发回读校验（校验失败会翻红 field.status）。
+ *  不 await 校验结果，避免阻塞 writeField 的返回；校验反馈通过行内标红 + 错误提示表达。 */
+function markWriteOkWithVerify(f: FieldState, exp: WriteExpect): true {
+  markWriteOk(f)
+  void verifyField(f, exp)
+  return true
+}
+
 async function writeField(f: FieldState): Promise<boolean> {
   if (!canWrite(f)) return false
+  // 写入前捕获期望值快照（校验用），必须在下发指令发出前完成
+  const exp = captureExpect(f)
   f.status = 'writing'
   if (autoFactory.value && !inFactory.value) {
     const ok = await enterFactory()
@@ -1234,7 +1357,7 @@ async function writeField(f: FieldState): Promise<boolean> {
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
         return false
       }
-      return markWriteOk(f)
+      return markWriteOkWithVerify(f, exp)
     }
     const bytes = encodeAsciiValue(f)
     jbdBus.send(buildWriteParam(f.index!, bytes))
@@ -1551,6 +1674,8 @@ async function sendFields(fields: FieldState[]) {
   for (let i = 0; i < fields.length; i++) {
     progress.value = Math.round(((i) / fields.length) * 100)
     const f = fields[i]
+    // 写入前捕获期望值快照（校验用），必须在下发指令发出前完成
+    const exp = captureExpect(f)
     // 复合保护字段：只由 level part 代表整个寄存器合成下发，delay part 跳过
     if (f.kind === 'scd') {
       if (f.scdPart === 'delay') { f.status = 'ok'; continue }
@@ -1565,7 +1690,8 @@ async function sendFields(fields: FieldState[]) {
         f.status = 'fail'; fail++
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       } else {
-        f.status = 'ok'; f.dirty = false; ok++
+        ok++
+        void verifyField(f, exp)
         if (peer) { peer.status = 'ok'; peer.dirty = false }
       }
       continue
@@ -1592,8 +1718,8 @@ async function sendFields(fields: FieldState[]) {
         f.status = 'fail'; fail++
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       } else {
-        f.status = 'ok'; f.dirty = false
         ok++
+        void verifyField(f, exp)
       }
       continue
     }
@@ -1606,8 +1732,8 @@ async function sendFields(fields: FieldState[]) {
         f.status = 'fail'; fail++
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       } else {
-        f.status = 'ok'; f.dirty = false
         ok++
+        void verifyField(f, exp)
       }
       continue
     }
