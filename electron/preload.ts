@@ -52,6 +52,13 @@ contextBridge.exposeInMainWorld('serialAPI', {
   }
 })
 
+// 配置类 API（密码等敏感校验放在主进程，渲染层不落明文）
+contextBridge.exposeInMainWorld('configAPI', {
+  // 强制下发密码校验
+  verifyDispatchPwd: (pwd: string): Promise<boolean> =>
+    ipcRenderer.invoke('config:verifyDispatchPwd', pwd),
+})
+
 // === 类型定义 ===
 
 export interface SerialPortInfo {

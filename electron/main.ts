@@ -15,7 +15,10 @@ function createWindow() {
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      // 渲染进程沙箱（Electron 20+ 默认开启，此处显式声明意图）：
+      // preload 仅使用 contextBridge/ipcRenderer 白名单 API，沙箱不影响功能
+      sandbox: true
     }
   })
 
@@ -80,6 +83,14 @@ serialManager.onData((data: Buffer) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('serial:data', Array.from(data))
   }
+})
+
+// ======== 配置类 IPC ========
+// 强制下发密码校验：密码只存在于主进程，不进渲染层 bundle
+//（此前硬编码在 JbdParamConfig.vue，解包 asar 即可看到明文）
+const DISPATCH_VERIFY_PWD = 'tyln@1688'
+ipcMain.handle('config:verifyDispatchPwd', (_event, pwd: unknown) => {
+  return typeof pwd === 'string' && pwd === DISPATCH_VERIFY_PWD
 })
 
 serialManager.onError((error: string) => {

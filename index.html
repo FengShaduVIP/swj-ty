@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- CSP：默认全部拒绝；脚本/样式仅限自身（样式需内联，Element Plus 运行时会注入）；
+         connect-src 放行 Vite 开发服务器的 HMR WebSocket -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*" />
     <title>天一BMS</title>
   </head>
   <body>

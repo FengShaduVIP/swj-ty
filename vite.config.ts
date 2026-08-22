@@ -5,6 +5,8 @@ import renderer from 'vite-plugin-electron-renderer'
 import { resolve } from 'path'
 
 export default defineConfig({
+  // 生产包用 loadFile 加载（file:// 协议），资源引用必须是相对路径
+  base: './',
   plugins: [
     vue(),
     electron([
