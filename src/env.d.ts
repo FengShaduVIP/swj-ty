@@ -61,4 +61,10 @@ interface SerialAPI {
 
 interface Window {
   serialAPI: SerialAPI
+  configAPI?: ConfigAPI
+}
+
+/** 配置类 API（注入自 preload.ts；密码校验等敏感逻辑在主进程） */
+interface ConfigAPI {
+  verifyDispatchPwd: (pwd: string) => Promise<boolean>
 }
