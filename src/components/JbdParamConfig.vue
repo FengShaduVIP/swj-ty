@@ -1312,7 +1312,35 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
     if (peer) { peer.status = 'fail'; peer.dirty = true }
     ElMessage.error(`校验失败[${f.label}]：${msg}`)
   }
-  const okRead = await readField(f)
+  const passBoth = () => {
+    f.status = 'ok'
+    f.dirty = false
+    if (peer) { peer.status = 'ok'; peer.dirty = false }
+  }
+  // scd 字段：直接读整寄存器原始值比对，避免依赖 readField 对 peer.value 的回写时序
+  // （强制下发批量帧密集时，readField 的 peer 同步与 captureExpect 易产生竞态，导致误报）。
+  if (f.kind === 'scd' && f.index !== undefined) {
+    const raw = await readScdRawRetry(f.index)
+    if (raw === null) {
+      failBoth('读取超时或无响应（设备未正确返回下发结果）')
+      return
+    }
+    const { level, delay } = splitScd(raw)
+    const expLevel = f.scdPart === 'level' ? (exp.raw! >> 4) & 0x0f : (exp.raw! & 0x0f)
+    const expDelay = f.scdPart === 'delay' ? (exp.raw! >> 4) & 0x0f : (exp.raw! & 0x0f)
+    const gotLevel = f.scdPart === 'level' ? level : delay
+    const gotDelay = f.scdPart === 'delay' ? level : delay
+    if (gotLevel !== expLevel || gotDelay !== expDelay) {
+      const eL = (exp.raw! >> 4) & 0x0f, eD = exp.raw! & 0x0f
+      failBoth(`下发值与读取不一致：下发(level=0x${eL.toString(16)} delay=0x${eD.toString(16)}) 读取(level=0x${level.toString(16)} delay=0x${delay.toString(16)})`)
+      return
+    }
+    passBoth()
+    return
+  }
+  // 其余字段：复用 readField（已内建 1500ms 超时），失败重试一次吸收批量帧拥挤超时
+  let okRead = await readField(f)
+  if (!okRead) okRead = await readField(f)
   if (!okRead) {
     failBoth('读取超时或无响应（设备未正确返回下发结果）')
     return
@@ -1322,10 +1350,19 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
   if (diff) {
     failBoth(diff)
   } else {
-    f.status = 'ok'
-    f.dirty = false
-    if (peer) { peer.status = 'ok'; peer.dirty = false }
+    passBoth()
   }
+}
+
+/** scd 整寄存器读取（带一次重试），返回 16 位 raw；超时/无响应返回 null */
+async function readScdRawRetry(index: number): Promise<number | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    jbdBus.send(buildReadParam(index, 1))
+    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const raw = parseParamResponse(resp)
+    if (raw !== null) return raw
+  }
+  return null
 }
 
 /** 下发成功后立即标记 ok，并异步触发回读校验（校验失败会翻红 field.status）。
