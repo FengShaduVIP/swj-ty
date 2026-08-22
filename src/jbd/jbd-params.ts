@@ -298,6 +298,20 @@ export function isChipScdKnown(chip: number | null): boolean {
   return OCD_MV[chip] !== undefined && SCD_MV[chip] !== undefined
 }
 
+/** 某芯片 delay（延时）档位的有效上界（含）：查表值连续非零的最大索引。
+ *  用于截断下拉选项，避免用户选中设备不可写入的档位（如集澈短路延时仅 0~3 有效）。
+ *  返回 0~15；若查表缺失或全 0 返回 15（交由界面提示处理）。 */
+export function scdDelayMaxIndex(chip: number | null, param: 'ocd' | 'scd'): number {
+  const table = param === 'ocd' ? OCD_DELAY_MS : SCD_DELAY_US
+  const arr = chip !== null && chip !== undefined ? table[chip] : undefined
+  if (!arr) return 15
+  let max = 0
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i] && arr[i] !== 0) max = i
+  }
+  return max
+}
+
 function trimNum(n: number, max = 3): string {
   if (!isFinite(n)) return '—'
   const r = Math.round(n * 10 ** max) / 10 ** max

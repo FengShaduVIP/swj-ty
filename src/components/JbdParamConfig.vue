@@ -329,7 +329,7 @@ import {
   buildEnterFactory, buildExitFactory,
   buildControlCommand, CONTROL_FUNC,
 } from '@/jbd/jbd-protocol'
-import { paramRawToDisplay, paramDisplayToRaw, paramFormat, paramDisplayDecimals, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs, isChipScdKnown } from '@/jbd/jbd-params'
+import { paramRawToDisplay, paramDisplayToRaw, paramFormat, paramDisplayDecimals, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs, scdDelayMaxIndex, isChipScdKnown } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
 import { addDispatchRecord, type DispatchParam } from '@/db/dispatchLog'
 import StatusBadge from './StatusBadge.vue'
@@ -667,8 +667,11 @@ function scdOptions(f: FieldState): { label: string; value: number }[] {
   const fn: (i: number) => string = f.scdPart === 'delay'
     ? (i: number) => scdDelayLabelMs(param, chip, i)         // 延时统一 mS
     : (i: number) => scdProtectLabel(param, chip, i, shunt)   // 保护值统一显示电流(A)
+  // delay 档位按芯片有效上界截断：避免用户选中设备不可写入的档（如集澈短路延时仅 0~3 有效），
+  // 否则下发后设备清零 → 回读校验必败标红。
+  const maxIdx = f.scdPart === 'delay' ? scdDelayMaxIndex(chip, param) : 15
   const out: { label: string; value: number }[] = []
-  for (let i = 0; i <= 15; i++) out.push({ label: fn(i), value: i })
+  for (let i = 0; i <= maxIdx; i++) out.push({ label: fn(i), value: i })
   return out
 }
 /** 取同 index 的另一个 part 字段（用于合成下发） */
