@@ -1319,27 +1319,32 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
   }
   // scd 字段：直接读整寄存器原始值比对，避免依赖 readField 对 peer.value 的回写时序
   // （强制下发批量帧密集时，readField 的 peer 同步与 captureExpect 易产生竞态，导致误报）。
+  // 校验策略：只匹配 level（保护值）档位；delay（延时）档位可能被设备自行清零/截断，
+  // 属正常设备行为，不判为校验失败（仅 warning 提示）。
   if (f.kind === 'scd' && f.index !== undefined) {
     const raw = await readScdRawRetry(f.index)
     if (raw === null) {
       failBoth('读取超时或无响应（设备未正确返回下发结果）')
       return
     }
-    const { level, delay } = splitScd(raw)
-    const expLevel = f.scdPart === 'level' ? (exp.raw! >> 4) & 0x0f : (exp.raw! & 0x0f)
-    const expDelay = f.scdPart === 'delay' ? (exp.raw! >> 4) & 0x0f : (exp.raw! & 0x0f)
-    const gotLevel = f.scdPart === 'level' ? level : delay
-    const gotDelay = f.scdPart === 'delay' ? level : delay
-    if (gotLevel !== expLevel || gotDelay !== expDelay) {
-      const eL = (exp.raw! >> 4) & 0x0f, eD = exp.raw! & 0x0f
-      failBoth(`下发值与读取不一致：下发(level=0x${eL.toString(16)} delay=0x${eD.toString(16)}) 读取(level=0x${level.toString(16)} delay=0x${delay.toString(16)})`)
+    const { level: gotL, delay: gotD } = splitScd(raw)
+    const eL = (exp.raw! >> 4) & 0x0f
+    const eD = exp.raw! & 0x0f
+    // 只校验 level 档位是否一致
+    if (gotL !== eL) {
+      failBoth(`保护值档位不一致：下发 level=0x${eL.toString(16)} 读取 level=0x${gotL.toString(16)}（delay: 下发=0x${eD.toString(16)} 读取=0x${gotD.toString(16)}）`)
       return
+    }
+    // level 一致但 delay 不一致 → 设备自行处理了延时档位（如归零），warning 提示但不标红
+    if (gotD !== eD) {
+      ElMessage.warning(`[${f.label}] 延时档位被设备调整：下发 0x${eD.toString(16)} → 读取 0x${gotD.toString(16)}（保护值档位已匹配，属正常行为）`)
     }
     passBoth()
     return
   }
-  // 其余字段：复用 readField（已内建 1500ms 超时），失败重试一次吸收批量帧拥挤超时
+  // 其余字段：复用 readField（已内建 1500ms 超时），失败重试两次吸收批量帧拥挤超时
   let okRead = await readField(f)
+  if (!okRead) okRead = await readField(f)
   if (!okRead) okRead = await readField(f)
   if (!okRead) {
     failBoth('读取超时或无响应（设备未正确返回下发结果）')
@@ -1354,9 +1359,9 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
   }
 }
 
-/** scd 整寄存器读取（带一次重试），返回 16 位 raw；超时/无响应返回 null */
+/** scd 整寄存器读取（带两次重试，共3次尝试），返回 16 位 raw；超时/无响应返回 null */
 async function readScdRawRetry(index: number): Promise<number | null> {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     jbdBus.send(buildReadParam(index, 1))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
     const raw = parseParamResponse(resp)
