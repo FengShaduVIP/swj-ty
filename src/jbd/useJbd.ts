@@ -3,21 +3,16 @@ import { ElMessage } from 'element-plus'
 import {
   buildReadBasicInfo, buildReadCellVoltages, buildReadHardwareVersion,
   buildReadProtectCounts, buildReadChipType, buildReadInternalRes,
-  buildControlMOS, MOS_TYPE, MOS_ACTION,
-  buildControlCommand, CONTROL_FUNC,
-  buildEnterFactory, buildExitFactory, buildReadParam, buildWriteParam,
-  buildFactoryPwdModify, buildFactoryPwdClear,
-  buildBtPair, buildBtPwdModify, buildHeating,
   parseBasicInfo, parseCellVoltages, parseHardwareVersion, parseProtectCounts, parseInternalRes,
   PROTECT_BIT, ALARM_BIT, type BasicInfo, type Frame,
 } from '@/jbd/jbd-protocol'
 import { jbdBus } from '@/jbd/jbd-bus'
-import { PARAM_TABLE, paramFormat, paramDispUnit, CHIP_TYPES } from '@/jbd/jbd-params'
+import { CHIP_TYPES } from '@/jbd/jbd-params'
 import { ui, pushSample } from '@/store'
 import { POLL_INTERVAL_MS } from '@/constants'
 
 // ============================================================
-// 模块级单例状态：实时监测页与设备控制页共享同一份数据与串口会话
+// 模块级单例状态：实时监测页 / 参数配置页共享同一份数据与串口会话
 // ============================================================
 const connected = computed(() => ui.conn === 'connected')
 
@@ -32,23 +27,8 @@ const chipTypeName = computed(() => {
   const name = CHIP_TYPES[chipType.value] ?? '未知方案'
   return `${name} (0x${chipType.value.toString(16).padStart(2, '0')})`
 })
-const paramResult = ref<{ reg: number; values: number[] } | null>(null)
 const ackHistory = ref<string[]>([])
-const inFactory = ref(false)
 const autoPollProxy = ref(false)
-
-const paramReg = ref(0)
-const paramCount = ref(1)
-const paramWriteReg = ref(2)
-const paramWriteVal = ref(0)
-
-const oldPwd = ref(0x5678)
-const newPwd = ref(0)
-const btOld = ref('')
-const btNew = ref('')
-
-const heatStartTemp = ref(5)
-const heatStopTemp = ref(15)
 
 // ===== 趋势历史 =====
 const MAX_HISTORY = 600
@@ -80,8 +60,6 @@ const activeAlarms = computed(() => {
   }
   return out
 })
-const writableParams = computed(() => PARAM_TABLE.filter((p) => !p.ascii))
-
 const socStatus = computed<'ok' | 'warning' | 'critical'>(() => {
   const s = basicInfo.value?.rsoc ?? 100
   if (s < 30) return 'critical'
@@ -136,27 +114,6 @@ const protectList = computed(() => [
   { key: 'short',      label: '短路次数', count: protectCounts.value['短路保护'] },
 ])
 
-// 0xFA 读取结果格式化
-const paramRegText = computed(() => paramResult.value?.reg ?? 0)
-const paramNameText = computed(() => paramResult.value ? paramName(paramResult.value.reg) : '')
-const paramRawHex = computed(() =>
-  paramResult.value ? paramResult.value.values.map((v) => '0x' + v.toString(16).padStart(4, '0').toUpperCase()).join(' ') : '')
-const paramDisplayText = computed(() => {
-  if (!paramResult.value || paramIsAscii(paramResult.value.reg)) return ''
-  return paramResult.value.values.map((v, i) => paramFormat(paramResult.value!.reg + i, v)).join(', ')
-})
-const paramAsciiText = computed(() =>
-  paramResult.value && paramIsAscii(paramResult.value.reg) ? paramAscii(paramResult.value.values) : '')
-const paramUnitText = computed(() => paramResult.value ? paramDispUnit(paramResult.value.reg) : '')
-
-function paramName(reg: number) { return PARAM_TABLE.find((p) => p.index === reg)?.name || '未知' }
-function paramIsAscii(reg: number) { return !!PARAM_TABLE.find((p) => p.index === reg)?.ascii }
-function paramAscii(values: number[]): string {
-  const bytes: number[] = []
-  values.forEach((v) => { bytes.push((v >> 8) & 0xff, v & 0xff) })
-  return bytes.filter((b) => b > 0 && b < 128).map((b) => String.fromCharCode(b)).join('')
-}
-
 // ===== 发送 / 帧分发（单例订阅）=====
 function send(frame: number[]) {
   if (!connected.value) { ElMessage.warning('请先连接串口'); return }
@@ -185,23 +142,13 @@ async function readChip() {
 function readRes() { send(buildReadInternalRes()) }
 
 let pollTimer: number | null = null
-const pollSuspended = ref(false)
 function startPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-  if (connected.value && autoPollProxy.value && !pollSuspended.value) {
+  if (connected.value && autoPollProxy.value) {
     pollTimer = window.setInterval(() => {
       pollSend(buildReadBasicInfo()); pollSend(buildReadCellVoltages())
     }, POLL_INTERVAL_MS)
   }
-}
-// 方案2：参数读取/下发期间临时挂起自动轮询，避免轮询帧插入参数操作序列
-function suspendPoll() {
-  pollSuspended.value = true
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-}
-function resumePoll() {
-  pollSuspended.value = false
-  startPoll()
 }
 function onPollChange(v: boolean) {
   autoPollProxy.value = v
@@ -265,90 +212,6 @@ const trendSeries = computed(() => {
 })
 const trendUnit = computed(() => (trendMetric.value === 'overview' ? 'V / A / ℃ / %' : trendMetric.value === 'pack' ? 'V / A' : trendMetric.value === 'temps' ? '℃' : 'V'))
 
-function setMos(type: number, open: boolean) { send(buildControlMOS(type, open ? MOS_ACTION.RELEASE : MOS_ACTION.CLOSE)) }
-function setMosBoth(open: boolean) { send(buildControlMOS(MOS_TYPE.CHARGE_DISCHARGE, open ? MOS_ACTION.RELEASE : MOS_ACTION.CLOSE)) }
-
-const controlButtons: { label: string; fn: readonly number[] }[] = [
-  { label: '重置容量', fn: CONTROL_FUNC.RESET_CAPACITY },
-  { label: '清除记录', fn: CONTROL_FUNC.CLEAR_RECORD },
-  { label: '复位MCU', fn: CONTROL_FUNC.RESET_MCU },
-  { label: '清除保护', fn: CONTROL_FUNC.CLEAR_PROTECT },
-  { label: '进入休眠', fn: CONTROL_FUNC.SLEEP },
-  { label: '掉电模式', fn: CONTROL_FUNC.POWER_DOWN },
-  { label: '自动均衡', fn: CONTROL_FUNC.AUTO_BALANCE },
-  { label: '储运模式', fn: CONTROL_FUNC.STORAGE },
-  { label: 'SOC20%开关', fn: CONTROL_FUNC.SOC20_SWITCH },
-  { label: 'SOC20%强开', fn: CONTROL_FUNC.SOC20_FORCE },
-  { label: '强制启动', fn: CONTROL_FUNC.FORCE_START },
-  { label: '强制加热', fn: CONTROL_FUNC.FORCE_HEAT },
-]
-function runControl(fn: readonly number[]) { send(buildControlCommand(fn)) }
-
-function enterFactory() { send(buildEnterFactory()); inFactory.value = true }
-function exitFactory() { send(buildExitFactory()); inFactory.value = false }
-
-// BMS 状态字 → 中文（与 jbdBus 响应处理保持一致）
-function statusText(s: number): string {
-  const map: Record<number, string> = {
-    0x80: '命令码不存在', 0x81: '操作无效/未进工厂模式', 0x82: '校验错误',
-    0x83: '密码配对错误', 0x84: '密码修改失败',
-  }
-  return map[s] || `状态0x${s.toString(16)}`
-}
-
-// 方案3：参数读取经 sendAck 等待应答；读取期间挂起轮询（方案2）避免帧交叠
-async function readParam() {
-  if (!connected.value) { ElMessage.warning('请先连接串口'); return }
-  suspendPoll()
-  try {
-    const f = await jbdBus.sendAck(buildReadParam(paramReg.value, paramCount.value))
-    if (f.timeout) ElMessage.warning('读取参数超时，未收到应答')
-    // 非零状态由 jbdBus 广播 handleFrame 已弹警告，此处不重复
-  } finally {
-    resumePoll()
-  }
-}
-
-// 方案3：参数下发严格串行（进工厂 → 写 → 出工厂），每帧等待应答后再发下一帧；
-// 下发期间挂起轮询（方案2）确保总线不被抢占。
-async function writeParam() {
-  if (!connected.value) { ElMessage.warning('请先连接串口'); return }
-  suspendPoll()
-  try {
-    const ef = await jbdBus.sendAck(buildEnterFactory())
-    if (ef.timeout) { ElMessage.error('进入工厂模式超时，未收到应答'); return }
-    if (ef.status !== 0x00) { ElMessage.error('进入工厂模式失败：' + statusText(ef.status)); return }
-    inFactory.value = true
-    const wf = await jbdBus.sendAck(buildWriteParam(paramWriteReg.value, [(paramWriteVal.value >> 8) & 0xff, paramWriteVal.value & 0xff]))
-    await jbdBus.sendAck(buildExitFactory())
-    inFactory.value = false
-    if (wf.timeout) ElMessage.error('参数下发超时，未收到应答（可能未生效，请重试）')
-    else if (wf.status !== 0x00) ElMessage.error('参数下发失败：' + statusText(wf.status))
-    else ElMessage.success('参数已下发')
-  } finally {
-    resumePoll()
-  }
-}
-
-function modifyFactoryPwd() { send(buildFactoryPwdModify(oldPwd.value, newPwd.value)) }
-function clearFactoryPwd() { send(buildFactoryPwdClear()) }
-function digits(s: string): number[] {
-  return s.split('').map((c) => parseInt(c, 10)).filter((n) => !isNaN(n) && n >= 0 && n <= 9)
-}
-function btPair() {
-  const d = digits(btNew.value)
-  if (d.length !== 6) { ElMessage.warning('请填写 6 位蓝牙密码'); return }
-  send(buildBtPair(d))
-}
-function btModify() {
-  const o = digits(btOld.value), n = digits(btNew.value)
-  if (o.length !== 6 || n.length !== 6) { ElMessage.warning('请填写 6 位蓝牙密码'); return }
-  send(buildBtPwdModify(o, n))
-}
-
-function heatStart() { send(buildHeating(0x01, 0, 0, heatStartTemp.value, heatStopTemp.value)) }
-function heatStop() { send(buildHeating(0x02, 0, 0, 0, 0)) }
-
 // ===== 单例帧分发（仅订阅一次，避免重复处理 / 重复 ack）=====
 function pushAck(text: string) {
   ackHistory.value.unshift(text)
@@ -388,15 +251,6 @@ function handleFrame(f: Frame) {
     // 因此绝不能以"收到 0x00 帧"来清空 chipType——否则强制下发等进厂动作会把芯片类型误清空，
     // 导致二级过流/短路保护下拉框被禁用。只有带数据的 0x00 帧才更新 chipType。
     case 0x00: if (f.data.length) chipType.value = f.data[f.data.length - 1]; break
-    case 0xfa:
-      if (f.data.length >= 3) {
-        const reg = (f.data[0] << 8) | f.data[1]
-        const count = f.data[2]
-        const values: number[] = []
-        for (let i = 0; i < count; i++) values.push(((f.data[3 + i * 2] << 8) | f.data[4 + i * 2]) & 0xffff)
-        paramResult.value = { reg, values }
-      }
-      break
     default:
       pushAck(`[0x${f.cmd.toString(16).padStart(2, '0')}] 成功`)
   }
@@ -421,28 +275,19 @@ export function useJbd() {
     connected,
     basicInfo,
     cellVoltages, internalRes, hwVersion, protectCounts, chipType,
-    paramResult, ackHistory, inFactory, autoPollProxy,
-    paramReg, paramCount, paramWriteReg, paramWriteVal,
-    oldPwd, newPwd, btOld, btNew,
-    heatStartTemp, heatStopTemp,
+    ackHistory, autoPollProxy,
     history, recordTrend, trendMetric,
     // 派生
-    cellMax, cellMin, maxTemp, activeProtects, activeAlarms, writableParams,
+    cellMax, cellMin, maxTemp, activeProtects, activeAlarms,
     socStatus, socLabel, tempStatus,
-    paramRegText, paramNameText, paramRawHex, paramDisplayText, paramAsciiText, paramUnitText,
     protectList, trendSeries, trendUnit, chipTypeName,
     // 工具
-    fmt, pad, cellClass, isBalancing, paramName,
+    fmt, pad, cellClass, isBalancing,
     // 动作
     send, pollSend,
     readBasic, readCells, readHw, readProtect, readChip, readRes,
     onPollChange,
     restartPoll: startPoll,
     recordSample, clearTrend,
-    setMos, setMosBoth,
-    controlButtons, runControl,
-    enterFactory, exitFactory, readParam, writeParam,
-    modifyFactoryPwd, clearFactoryPwd, btPair, btModify,
-    heatStart, heatStop,
   }
 }
