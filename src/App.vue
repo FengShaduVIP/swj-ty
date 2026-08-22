@@ -226,7 +226,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, markRaw } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, markRaw } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Connection, DataBoard, Setting, Fold, Expand, Operation, Refresh, Tickets } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
@@ -234,10 +234,12 @@ import JbdPanel from './components/JbdPanel.vue'
 import JbdParamConfig from './components/JbdParamConfig.vue'
 import DispatchLog from './components/DispatchLog.vue'
 import ConnIndicator from './components/ConnIndicator.vue'
-import { ui, setConnected, setConnecting, setDisconnected, markCommError } from './store'
+import { ui, setConnected, setConnecting, setDisconnected, markCommError, serialForm } from './store'
 import { jbdBus } from './jbd/jbd-bus'
 import { describeFrame as describeJbdFrame } from './jbd/jbd-protocol'
 import { useJbd } from './jbd/useJbd'
+import type { LogEntry } from './types/log'
+import { nowTimeWithMs } from './utils/time'
 import pkg from '../package.json'
 import { LOG_MAX_LINES } from './constants'
 
@@ -278,18 +280,10 @@ const topPort = ref('')
 // 串口连接成功后，把顶部下拉框同步到当前端口；断开时保留原选择，方便重连
 watch(() => ui.portPath, (p) => { if (p) topPort.value = p }, { immediate: true })
 
-interface LogEntry {
-  time: string
-  type: 'send' | 'recv' | 'error' | 'info'
-  content: string
-}
 const dataLogs = ref<LogEntry[]>([])
 
 function addLog(type: LogEntry['type'], content: string) {
-  const now = new Date()
-  const time = now.toLocaleTimeString('zh-CN', { hour12: false }) +
-    '.' + now.getMilliseconds().toString().padStart(3, '0')
-  dataLogs.value.push({ time, type, content })
+  dataLogs.value.push({ time: nowTimeWithMs(), type, content })
   if (dataLogs.value.length > LOG_MAX_LINES) dataLogs.value = dataLogs.value.slice(-LOG_MAX_LINES)
 }
 
@@ -319,12 +313,13 @@ async function handleDisconnect() {
 }
 function onTopConnect() {
   if (!topPort.value) return
+  // 与设备连接页共享同一份串口参数（store.serialForm），不再写死 9600
   handleConnect({
     path: topPort.value,
-    baudRate: 9600,
-    dataBits: 8,
-    stopBits: 1,
-    parity: 'none',
+    baudRate: serialForm.baudRate,
+    dataBits: serialForm.dataBits,
+    stopBits: serialForm.stopBits,
+    parity: serialForm.parity,
   })
 }
 async function handleRefreshPorts(): Promise<SerialPortInfo[]> {
@@ -454,7 +449,9 @@ watch(basicInfo, (v) => {
 function handleStatusChange(status: SerialStatus) {
   if (status.connected) {
     portPath.value = status.portPath || ''
-    setConnected(status.portPath || '', ui.baudRate)
+    // 自动连接路径 store 里可能还没有波特率（ui.baudRate 为 0），优先取主进程
+    // statusChange 事件带回的真实值，避免状态栏显示 "@ 0"
+    setConnected(status.portPath || '', status.baudRate ?? ui.baudRate)
     jbdBus.setConnected(true)
     // 仅自动连接成功才验证后跳转；手动连接只验证、不跳转
     startVerify(!!status.auto)

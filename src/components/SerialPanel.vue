@@ -114,19 +114,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, toRef, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Setting, Link, SwitchButton } from '@element-plus/icons-vue'
 import DataLog from './DataLog.vue'
 import ConnIndicator from './ConnIndicator.vue'
 import StatusBadge from './StatusBadge.vue'
-import { ui } from '@/store'
-
-interface LogEntry {
-  time: string
-  type: 'send' | 'recv' | 'error' | 'info'
-  content: string
-}
+import { ui, serialForm } from '@/store'
+import type { LogEntry } from '@/types/log'
 
 const props = withDefaults(defineProps<{
   connected: boolean
@@ -147,10 +142,11 @@ const emit = defineEmits<{
 
 // 选中的串口与顶部栏共用同一份状态（topPort），保证两处下拉框选择一致
 const selectedPort = defineModel<string>('selectedPort', { default: '' })
-const baudRate = ref(9600)
-const dataBits = ref<5 | 6 | 7 | 8>(8)
-const stopBits = ref<1 | 1.5 | 2>(1)
-const parity = ref<'none' | 'even' | 'odd' | 'mark' | 'space'>('none')
+// 串口参数同样与顶部栏共享（store.serialForm），避免顶栏快捷连接与连接页参数不一致
+const baudRate = toRef(serialForm, 'baudRate')
+const dataBits = toRef(serialForm, 'dataBits')
+const stopBits = toRef(serialForm, 'stopBits')
+const parity = toRef(serialForm, 'parity')
 const connecting = ref(false)
 
 const baudRates = [300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 56000, 57600, 115200, 128000, 256000]

@@ -36,7 +36,7 @@ const history = ref<Sample[]>([])
 const recordTrend = ref(true)
 const trendMetric = ref<'overview' | 'pack' | 'cells' | 'temps'>('overview')
 
-interface Sample { t: number; total: number; current: number; cells: number[]; temps: number[]; minC: number; maxC: number; diffC: number }
+interface Sample { t: number; total: number; current: number; soc: number; cells: number[]; temps: number[]; minC: number; maxC: number; diffC: number }
 
 // ===== 派生 =====
 const cellMax = computed(() => (cellVoltages.value.length ? Math.max(...cellVoltages.value) : 0))
@@ -163,6 +163,7 @@ function recordSample() {
     t: Date.now(),
     total: basicInfo.value.totalVoltage_mV / 1000,
     current: basicInfo.value.current_mA / 1000,
+    soc: basicInfo.value.rsoc,
     cells: [...cells],
     temps: [...basicInfo.value.temperatures_C],
     minC: cells.length ? Math.min(...cells) / 1000 : 0,
@@ -184,7 +185,7 @@ const trendSeries = computed(() => {
         { name: '总压(V)', color: C.voltage, data: h.map((s) => s.total) },
         { name: '电流(A)', color: C.current, data: h.map((s) => s.current) },
         { name: '温度(℃)', color: C.temp, data: h.map((s) => s.maxC) },
-        { name: 'SOC(%)', color: C.soc, data: h.map((s) => basicInfo.value?.rsoc ?? 0) },
+        { name: 'SOC(%)', color: C.soc, data: h.map((s) => s.soc) },
       ]
     case 'pack':
       return [
@@ -256,8 +257,9 @@ function handleFrame(f: Frame) {
   }
 }
 
-let busSub: (() => void) | null = null
-if (!busSub) busSub = jbdBus.onFrame((f) => handleFrame(f))
+// 模块级单例帧订阅：useJbd 被多处调用也只注册一次，避免重复处理 / 重复 ack
+const busSub = jbdBus.onFrame((f) => handleFrame(f))
+void busSub
 
 // 连接建立且尚未识别芯片方案时，自动读取芯片类型。
 // 芯片方案决定二级过流/短路保护下拉框的物理量档位，缺它会导致下拉全显示 0.00A 而误导用户。

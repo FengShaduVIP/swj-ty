@@ -65,3 +65,12 @@ export function markCommError() {
 export function pushSample() {
   ui.sampleCount++
 }
+
+/** 串口参数表单：设备连接页（SerialPanel）与顶部快捷连接共用，
+ *  避免顶栏连接写死 9600 而忽略用户在连接页配置的波特率 */
+export const serialForm = reactive({
+  baudRate: 9600,
+  dataBits: 8 as 5 | 6 | 7 | 8,
+  stopBits: 1 as 1 | 1.5 | 2,
+  parity: 'none' as 'none' | 'even' | 'odd' | 'mark' | 'space',
+})
