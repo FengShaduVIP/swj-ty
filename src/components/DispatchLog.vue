@@ -8,6 +8,7 @@ import {
   type DispatchRecord,
   type DispatchParam,
 } from '@/db/dispatchLog'
+import { fmtDateTime } from '@/utils/time'
 
 const records = ref<DispatchRecord[]>([])
 const keyword = ref('')
@@ -30,11 +31,7 @@ const filtered = computed(() => {
   )
 })
 
-function fmtTime(t: number): string {
-  const d = new Date(t)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
+const fmtTime = (t: number): string => fmtDateTime(t)
 
 function fmtValue(v: unknown): string {
   if (v == null || v === '') return '—'

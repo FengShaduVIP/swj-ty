@@ -291,9 +291,6 @@ function refreshAll() {
 }
 
 // 启动时拉一帧（连接好的话）；挂载/卸载接管轮询生命周期
-const now = new Date()
-let mountedAt = ''
-mountedAt = now.toLocaleTimeString('zh-CN', { hour12: false })
 // 连接状态变化时：
 //  - 恢复连接：立刻拉一帧（连接建立那一刻），并交由 useJbd 的 pollTimer 接管后续 2s 轮询；
 //  - 断开：停止轮询（restartPoll 在断开态下会自动清空定时器）。
@@ -504,10 +501,6 @@ onUnmounted(() => {
 }
 .evt-row:nth-child(2n) { border-right: none; }
 .evt-row:nth-last-child(-n+2) { border-bottom: none; }    /* 倒数 2 行移除底边 */
-.evt-row:nth-last-child(2):nth-child(odd) {
-  /* 最后一行仅 1 项（11 个），用 ::after 占位隐藏 */
-}
-.evt-row:nth-child(11) { /* 短路次数单独一行左侧 */ }
 .evt-name { color: var(--text-secondary); }
 .evt-count {
   font-family: var(--font-mono);

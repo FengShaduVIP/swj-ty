@@ -34,12 +34,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 import { List, Document } from '@element-plus/icons-vue'
-
-interface LogEntry {
-  time: string
-  type: 'send' | 'recv' | 'error' | 'info'
-  content: string
-}
+import type { LogEntry } from '@/types/log'
 
 const props = defineProps<{ logs: LogEntry[] }>()
 defineEmits<{ clear: [] }>()

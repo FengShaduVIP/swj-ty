@@ -34,10 +34,7 @@ export interface ParamDef {
   ascii?: boolean
 }
 
-function toSigned16(v: number): number {
-  v &= 0xffff
-  return v >= 0x8000 ? v - 0x10000 : v
-}
+import { toSigned16 } from './jbd-protocol'
 
 // 单寄存器参数（0~55）
 const SINGLE: Omit<ParamDef, 'index'>[] = [
@@ -334,12 +331,8 @@ export const DEFAULT_SHUNT_MOHM = 0.1
 
 export function scdProtectLabel(param: ScdParam, chip: number | null, level: number, shuntMOhm: number): string {
   if (chip === 0) return `档${level} · TI专用`
-  // 凹凸芯片：保护值直接是安培(A)
-  // if (chip === 1) {
-  //   const amps = param === 'ocd' ? overcurrentMv(chip, level) : shortCircuitMv(chip, level)
-  //   return `档${level} · ${trimNum(amps, 1)} A`
-  // }
-  // 其他芯片：mV → A（÷检流电阻；检流电阻未知时按默认值估算）
+  // 查表值为电压阈值(mV)，÷检流电阻(mΩ) 得电流(A)；检流电阻未知时按默认值估算。
+  // 全部芯片统一显示单位 A（无 mV 回退）。
   const mv = param === 'ocd' ? overcurrentMv(chip, level) : shortCircuitMv(chip, level)
   const shunt = shuntMOhm > 0 ? shuntMOhm : DEFAULT_SHUNT_MOHM
   return `档${level} · ${trimNum(mv / shunt, 2)} A`
