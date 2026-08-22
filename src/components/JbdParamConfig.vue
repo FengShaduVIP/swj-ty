@@ -1330,7 +1330,10 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
   // 设备如实回写则整值相等 → 保护值档 + 延时档两个 part 自然都一致（整寄存器对得上）；
   // 整值不等才判校验失败，并把 level/delay 两个 part 一并标红，便于定位。
   if (f.kind === 'scd' && f.index !== undefined) {
-    const okRead = await readField(f)
+    // scd 回读也重试 3 次（与非 scd 一致），吸收强制下发批量帧密集导致的偶发超时
+    let okRead = await readField(f)
+    if (!okRead) okRead = await readField(f)
+    if (!okRead) okRead = await readField(f)
     if (!okRead) {
       failBoth('读取超时或无响应（设备未正确返回下发结果）')
       return
