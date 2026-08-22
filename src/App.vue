@@ -144,7 +144,7 @@
           />
           <JbdPanel v-show="active === 'monitor'" :connected="connected" />
           <JbdParamConfig v-show="active === 'config'" :connected="connected" />
-          <DispatchLog v-show="active === 'log'" />
+          <DispatchLog v-show="active === 'log'" :connected="connected" />
         </section>
       </main>
     </div>
@@ -256,7 +256,7 @@ const JBD_VIEWS = markRaw<ViewDef[]>([
   { key: 'connect', title: '设备连接', hint: '配置串口参数并建立与 BMS 的通信链路', icon: Connection },
   { key: 'monitor', title: '实时监测', hint: '只读遥测：基本信息、趋势曲线、单体电压分布与内阻', icon: DataBoard },
   { key: 'config',  title: '参数配置', hint: '读写 0xFA 保护参数寄存器（支持导入/导出）', icon: Operation },
-  { key: 'log',     title: '下发记录', hint: '强制下发的本地历史记录（时间 / 蓝牙名称 / 具体参数），可查询与导出', icon: Tickets },
+  { key: 'log',     title: '下发记录', hint: '所有下发操作的本地历史（强制/全部/导入/单字段），支持查询、对比、重新下发与导出', icon: Tickets },
 ])
 const views = JBD_VIEWS
 const active = ref('monitor')

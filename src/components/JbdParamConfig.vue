@@ -331,6 +331,7 @@ import {
 } from '@/jbd/jbd-reg-io'
 import { paramRawToDisplay, paramDisplayToRaw, paramFormat, paramDisplayDecimals, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs, scdDelayMaxIndex, isChipScdKnown } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
+import { ui } from '@/store'
 import { addDispatchRecord, type DispatchParam } from '@/db/dispatchLog'
 import StatusBadge from './StatusBadge.vue'
 import {
@@ -994,26 +995,35 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
   }
 }
 
-/** 下发成功后立即标记 ok，并异步触发回读校验（校验失败会翻红 field.status）。
- *  不 await 校验结果，避免阻塞 writeField 的返回；校验反馈通过行内标红 + 错误提示表达。 */
-function markWriteOkWithVerify(f: FieldState, exp: WriteExpect): true {
+/** 下发成功后标记 ok，并 await 回读校验（校验失败会翻红 field.status）。
+ *  返回校验是否通过；await 使单字段下发按钮的 loading 覆盖到校验完成。 */
+async function markWriteOkWithVerify(f: FieldState, exp: WriteExpect): Promise<boolean> {
   markWriteOk(f)
-  void verifyField(f, exp)
-  return true
+  await verifyField(f, exp)
+  return f.status !== 'fail'
 }
 
-async function writeField(f: FieldState): Promise<boolean> {
-  if (!canWrite(f)) return false
+interface FieldWriteOutcome {
+  ok: boolean
+  /** 用户取消（密码弹窗取消等）——不算一次下发，不写入记录 */
+  cancelled: boolean
+  /** 写入成功但回读校验不一致 */
+  verifyFail: boolean
+}
+
+/** 单字段下发执行（值快照与记录由外层 writeField 统一处理） */
+async function writeFieldExec(f: FieldState): Promise<FieldWriteOutcome> {
+  if (!canWrite(f)) return { ok: false, cancelled: true, verifyFail: false }
   // 写入前捕获期望值快照（校验用），必须在下发指令发出前完成
   const exp = captureExpect(f)
   f.status = 'writing'
   if (autoFactory.value && !inFactory.value) {
-    if (!(await enterFactory())) { f.status = 'fail'; return false }
+    if (!(await enterFactory())) { f.status = 'fail'; return { ok: false, cancelled: false, verifyFail: false } }
   }
-  const fail = () => {
+  const fail = (): FieldWriteOutcome => {
     f.status = 'fail'
     ElMessage.error(`写参数[${f.label}]失败: 超时或设备拒绝（详见通信日志）`)
-    return false
+    return { ok: false, cancelled: false, verifyFail: false }
   }
   // ASCII 字段：多寄存器写（ascii_len 个寄存器 → ascii_len*2 字节）
   if (f.ascii) {
@@ -1022,12 +1032,14 @@ async function writeField(f: FieldState): Promise<boolean> {
       const resp = await jbdBus.sendAck(buildSetBtName(String(f.value ?? '')))
       if (autoFactory.value) await exitFactory()
       if (!resp || resp.timeout || resp.status !== 0x00) return fail()
-      return markWriteOkWithVerify(f, exp)
+      const verified = await markWriteOkWithVerify(f, exp)
+      return { ok: true, cancelled: false, verifyFail: !verified }
     }
     const wrote = await writeRegs(f.index!, encodeAsciiValue(f))
     if (autoFactory.value) await exitFactory()
     if (!wrote) return fail()
-    return markWriteOk(f)
+    markWriteOk(f)
+    return { ok: true, cancelled: false, verifyFail: false }
   }
   // 复合保护字段（scd）：与 peer 合并成 16 位字再下发
   if (f.kind === 'scd') {
@@ -1041,7 +1053,8 @@ async function writeField(f: FieldState): Promise<boolean> {
     if (autoFactory.value) await exitFactory()
     if (!wrote) return fail()
     if (peer) { peer.status = 'ok'; peer.dirty = false }
-    return markWriteOk(f)
+    markWriteOk(f)
+    return { ok: true, cancelled: false, verifyFail: false }
   }
   // 下拉选项字段：value 即原始寄存器值，直接下发
   if (f.options) {
@@ -1049,7 +1062,8 @@ async function writeField(f: FieldState): Promise<boolean> {
     const wrote = await writeRegs(f.index!, [(raw >> 8) & 0xff, raw & 0xff])
     if (autoFactory.value) await exitFactory()
     if (!wrote) return fail()
-    return markWriteOk(f)
+    markWriteOk(f)
+    return { ok: true, cancelled: false, verifyFail: false }
   }
   // 普通数值字段
   // 检流阻值等需密码校验：先弹窗确认（校验在主进程），密码不正确则中止下发
@@ -1058,14 +1072,37 @@ async function writeField(f: FieldState): Promise<boolean> {
     if (!ok) {
       f.status = 'fail'
       ElMessage.warning(`写参数[${f.label}]已取消：密码校验未通过`)
-      return false
+      return { ok: false, cancelled: true, verifyFail: false }
     }
   }
   const raw = paramDisplayToRaw(f.index!, f.value)
   const wrote = await writeRegs(f.index!, [(raw >> 8) & 0xff, raw & 0xff])
   if (autoFactory.value) await exitFactory()
   if (!wrote) return fail()
-  return markWriteOk(f)
+  markWriteOk(f)
+  return { ok: true, cancelled: false, verifyFail: false }
+}
+
+/** 单字段下发（模板「下发」按钮入口）：执行 + 写入下发记录 */
+async function writeField(f: FieldState): Promise<boolean> {
+  const snapshotValue = f.value
+  const exp = captureExpect(f)
+  const r = await writeFieldExec(f)
+  if (!r.cancelled) {
+    addDispatchRecord({
+      opType: 'single',
+      btName: btNameOf(),
+      params: [{
+        label: f.label,
+        index: f.index,
+        value: snapshotValue,
+        raw: exp.raw,
+        result: r.ok ? (r.verifyFail ? 'verifyFail' : 'ok') : 'fail',
+      }],
+      ...dispatchCtx(),
+    })
+  }
+  return r.ok
 }
 
 // 计算去重后的「读取单元」：位开关共用同一寄存器（按 bitIndex 去重）、
@@ -1271,17 +1308,45 @@ function markImportedDirty() {
   }
 }
 
+// ====== 下发记录（所有写设备的入口统一留痕，见 db/dispatchLog.ts） ======
+/** 当前设备上下文：芯片类型 / 电池SN / 软件版本 / 串口，用于追溯“下发给哪块电池” */
+function dispatchCtx() {
+  const snField = allFields.value.find((f) => f.key === 'sn')
+  const snVal = snField?.value
+  return {
+    chipTypeName: j.chipType.value != null ? j.chipTypeName.value : undefined,
+    sn: typeof snVal === 'number' ? '0x' + (snVal & 0xffff).toString(16).toUpperCase().padStart(4, '0') : undefined,
+    swVersion: j.basicInfo.value?.swVersion || undefined,
+    portPath: ui.portPath || undefined,
+  }
+}
+/** 蓝牙名称（未读取时显示 —） */
+function btNameOf(): string {
+  const f = allFields.value.find((x) => x.key === 'bt-name')
+  return f && f.value != null && String(f.value) !== '' ? String(f.value) : '—'
+}
+
 // 通用下发：对传入字段集合逐一下发，复用全部合成/密码/工厂逻辑。
 // 调用方决定字段集合（脏字段、或全部已读字段），本函数不判断 dirty。
-async function sendFields(fields: FieldState[]) {
-  if (!fields.length) return
+// 返回结果摘要（含逐参数下发/校验结果），供调用方写入下发记录。
+interface SendSummary {
+  ok: number
+  fail: number
+  verifyFail: number
+  params: DispatchParam[]
+}
+
+async function sendFields(fields: FieldState[]): Promise<SendSummary> {
+  if (!fields.length) return { ok: 0, fail: 0, verifyFail: 0, params: [] }
   busy.value = true
   let ok = 0, fail = 0
   // 收集写入成功的字段及其期望值快照，全部写完后统一批量/串行回读校验
   //（禁止在循环内并发触发 verifyField：多个字段的回读会互相抢帧，见 verifyQueueBatch）。
   const verifyQueue: { f: FieldState; exp: WriteExpect }[] = []
+  // 下发记录条目：值在写入前快照，结果在写+校验全部完成后回填
+  const entries: { f: FieldState; param: DispatchParam; wrote: boolean }[] = []
   if (autoFactory.value && !inFactory.value) {
-    if (!(await enterFactory())) { busy.value = false; return }
+    if (!(await enterFactory())) { busy.value = false; return { ok: 0, fail: 0, verifyFail: 0, params: [] } }
   }
   for (let i = 0; i < fields.length; i++) {
     progress.value = Math.round((i / fields.length) * 100)
@@ -1292,7 +1357,7 @@ async function sendFields(fields: FieldState[]) {
       f.status = 'fail'; fail++
       ElMessage.error(`写参数[${f.label}]失败: 超时或设备拒绝（详见通信日志）`)
     }
-    // 复合保护字段：只由 level part 代表整个寄存器合成下发，delay part 跳过
+    // 复合保护字段：只由 level part 代表整个寄存器合成下发，delay part 跳过（不记录）
     if (f.kind === 'scd') {
       if (f.scdPart === 'delay') { f.status = 'ok'; continue }
       const peer = scdPeer(f)
@@ -1307,9 +1372,11 @@ async function sendFields(fields: FieldState[]) {
         verifyQueue.push({ f, exp })
         if (peer) { peer.status = 'ok'; peer.dirty = false }
       }
+      entries.push({ f, param: { label: f.label, index: f.index, value: selfVal, raw }, wrote })
       continue
     }
     f.status = 'writing'
+    const entry = { f, param: { label: f.label, index: f.index, value: f.value, raw: exp.raw } as DispatchParam, wrote: false }
     // ASCII 字段：多寄存器写（蓝牙名称走专用 0xA2 指令）
     if (f.ascii) {
       let wrote: boolean
@@ -1321,6 +1388,8 @@ async function sendFields(fields: FieldState[]) {
       }
       if (!wrote) writeFail()
       else { f.status = 'ok'; f.dirty = false; ok++; verifyQueue.push({ f, exp }) }
+      entry.wrote = wrote
+      entries.push(entry)
       continue
     }
     // 下拉选项字段：value 即原始寄存器值
@@ -1329,6 +1398,8 @@ async function sendFields(fields: FieldState[]) {
       const wrote = await writeRegs(f.index!, [(raw >> 8) & 0xff, raw & 0xff])
       if (!wrote) writeFail()
       else { ok++; verifyQueue.push({ f, exp }) }
+      entry.wrote = wrote
+      entries.push(entry)
       continue
     }
     // 普通数值字段；检流阻值等需密码校验：先弹窗确认（校验在主进程）
@@ -1337,20 +1408,30 @@ async function sendFields(fields: FieldState[]) {
       if (!pwdOk) {
         f.status = 'fail'; fail++
         ElMessage.warning(`写参数[${f.label}]已取消：密码校验未通过`)
-        continue
+        continue // 取消下发：不写入记录条目
       }
     }
     const raw = paramDisplayToRaw(f.index!, f.value!)
     const wrote = await writeRegs(f.index!, [(raw >> 8) & 0xff, raw & 0xff])
     if (!wrote) writeFail()
     else { f.status = 'ok'; f.dirty = false; ok++; verifyQueue.push({ f, exp }) }
+    entry.wrote = wrote
+    entries.push(entry)
   }
   if (autoFactory.value) await exitFactory()
   // 全部写完后统一回读校验（已退出工厂模式；verifyQueueBatch 内部按需再进）
   if (verifyQueue.length) await verifyQueueBatch(verifyQueue)
+  // 回填下发结果：写失败 → fail；写成功但校验后 status=fail → verifyFail
+  let verifyFail = 0
+  for (const e of entries) {
+    if (!e.wrote) { e.param.result = 'fail'; continue }
+    if (e.f.status === 'fail') { e.param.result = 'verifyFail'; verifyFail++; continue }
+    e.param.result = 'ok'
+  }
   progress.value = 100
   busy.value = false
-  ElMessage[fail ? 'warning' : 'success'](`参数下发完成：${ok} 成功，${fail} 失败`)
+  ElMessage[fail || verifyFail ? 'warning' : 'success'](`参数下发完成：${ok} 成功，${fail + verifyFail} 失败/校验不一致`)
+  return { ok, fail, verifyFail, params: entries.map((e) => e.param) }
 }
 
 /** 批量下发后的统一回读校验：
@@ -1413,7 +1494,10 @@ async function writeAll() {
     (f) => f.dirty && !f.customDisplay && !f.readOnly && !isBitSwitch(f) && f.index !== undefined && !f.needPassword,
   )
   if (!dirty.length) return
-  await sendFields(dirty)
+  const summary = await sendFields(dirty)
+  if (summary.params.length) {
+    addDispatchRecord({ opType: 'writeAll', btName: btNameOf(), params: summary.params, ...dispatchCtx() })
+  }
 }
 
 // 强制下发：把当前已读取/已显示的字段值全部下发一遍，不依赖脏标记。
@@ -1438,17 +1522,13 @@ async function forceWriteAll() {
   // 同时页面模板参数值保持不变，支持用同一套参数反复下发多组电池。
   j.chipType.value = null
   await j.readChip()
-  await sendFields(fields)
-  // 落地：把本次强制下发的参数快照写入本地记录库（时间 + 蓝牙名称 + 具体参数）
-  const btField = fields.find((f) => f.key === 'bt-name')
-  const btName = btField && btField.value != null ? String(btField.value) : '—'
-  const params: DispatchParam[] = fields.map((f) => ({
-    label: f.label,
-    index: f.index,
-    value: f.value,
-  }))
-  addDispatchRecord({ btName, params })
-  ElMessage.info('已记录本次强制下发到本地历史')
+  const summary = await sendFields(fields)
+  // 落地：把本次强制下发的参数快照与结果写入本地记录库
+  //（时间 / 蓝牙名称 / 设备上下文 / 逐参数下发+校验结果）
+  if (summary.params.length) {
+    const rec = addDispatchRecord({ opType: 'force', btName: btNameOf(), params: summary.params, ...dispatchCtx() })
+    ElMessage.info(`已记录本次强制下发到本地历史（${rec.okCount} 成功 / ${rec.failCount + rec.verifyFailCount} 失败）`)
+  }
 }
 
 // ====== 分组位图下发（用于功能设置/温度探头配置） ======
@@ -1484,6 +1564,18 @@ async function writeGroupBitmap(g: { title: string; fields: FieldState[] }, bitI
   if (!wrote) ElMessage.error(`写位图[${g.title}]失败: 超时或设备拒绝`)
   if (autoFactory.value) await exitFactory()
   busy.value = false
+  addDispatchRecord({
+    opType: 'bitmap',
+    btName: btNameOf(),
+    params: dirty.map((f) => ({
+      label: f.label,
+      index: bitIndex,
+      value: !!f.value,
+      raw,
+      result: wrote ? 'ok' : 'fail',
+    })),
+    ...dispatchCtx(),
+  })
   ElMessage[wrote ? 'success' : 'warning'](`[${g.title}] 位图下发完成：${wrote ? dirty.length : 0} 成功，${wrote ? 0 : dirty.length} 失败`)
 }
 
@@ -1599,6 +1691,18 @@ async function sendAllImported() {
   if (autoFactory.value) await exitFactory()
   progress.value = 100
   busy.value = false
+  addDispatchRecord({
+    opType: 'import',
+    btName: btNameOf(),
+    params: list.map((p) => ({
+      label: p.label,
+      index: p.index,
+      value: p.value,
+      raw: p.raw,
+      result: (p.status === 'fail' ? 'fail' : 'ok') as DispatchParam['result'],
+    })),
+    ...dispatchCtx(),
+  })
   ElMessage[fail ? 'warning' : 'success'](`一键下发完成：${ok} 成功，${fail} 失败`)
   importDialogVisible.value = false
 }
