@@ -360,7 +360,7 @@ interface FieldDef {
   customDisplay?: CustomDisplayKind
   /** 跨列占满（用于检流阻值等） */
   fullWidth?: boolean
-  /** 字段行内附带「复位 MCU」按钮（与设备控制页功能一致） */
+  /** 字段行内附带「复位 MCU」按钮（发送控制指令 0x03 0x00） */
   resetMcu?: boolean
   /** 下拉选项字段：value 为下发到 BMS 的原始寄存器值 */
   options?: { label: string; value: number }[]
@@ -1078,7 +1078,7 @@ function resetToDefault() {
   ElMessage.success('已恢复默认顺序')
 }
 
-// 字段行内「复位 MCU」按钮：与设备控制页 runControl(RESET_MCU) 同源，发送控制指令 0x03 0x00
+// 字段行内「复位 MCU」按钮：发送控制指令 0x03 0x00（原设备控制页 runControl(RESET_MCU) 同源逻辑）
 async function confirmResetMcu() {
   if (!props.connected) { ElMessage.warning('请先连接串口'); return }
   try {
@@ -1133,8 +1133,11 @@ async function readField(f: FieldState): Promise<boolean> {
   }
   // scd 复合保护字段读取前需先发送芯片指令(CMD.CHIP_TYPE+密码)解锁设备，
   // 否则设备可能返回缓存旧值/未解锁默认值（与 readAll→readChip 对齐）。
+  // 仅在「本调用前不在工厂态」时临时进入，并在读取后退出，避免把设备遗留锁在
+  // 工厂模式（影响后续实时监测/其他字段）；readAll 已统一 enter 的场景不重复处理。
+  let tmpFactory = false
   if (f.kind === 'scd' && autoFactory.value && !inFactory.value) {
-    await enterFactory()
+    tmpFactory = await enterFactory()
   }
   f.status = 'reading'
   // 位开关：读一次位图，所有同位图字段同步
@@ -1155,15 +1158,26 @@ async function readField(f: FieldState): Promise<boolean> {
   // ASCII 块：读 N 个寄存器
   // 蓝牙名称(index 88)读取即 0xFA 88~103 条形码信息，显示其条形码数值；
   // 仅下发蓝牙名称时才使用专用 0xA2 指令（见 sendFields 写分支）。
+  // 读取前需先进入工厂模式解锁设备（与 scd 分支对齐），否则普通模式下
+  // BMS 编码信息(72)/生产厂商(56) 等 ASCII 块可能返回空字节流，导致校验误报。
+  // 同样采用临时进入+读取后退出，避免遗留工厂态。
+  if (f.ascii && autoFactory.value && !inFactory.value) {
+    tmpFactory = await enterFactory()
+  }
   if (f.ascii) {
     const len = f.ascii_len ?? 8
     jbdBus.send(buildReadParam(f.index!, len))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
-    if (!resp || resp.timeout || resp.status !== 0x00) { f.status = 'fail'; return false }
+    if (!resp || resp.timeout || resp.status !== 0x00) {
+      if (tmpFactory && autoFactory.value) await exitFactory()
+      f.status = 'fail'; return false
+    }
     const text = parseAsciiResponse(resp, len * 2)
     f.value = text
     f.dirty = false
     f.status = 'ok'
+    // 临时进入工厂态则退出，恢复普通模式（避免遗留锁态影响后续交互）
+    if (tmpFactory && autoFactory.value) await exitFactory()
     return true
   }
   // date / serialRaw：读 raw 值，由 customDisplay 格式化
@@ -1182,7 +1196,10 @@ async function readField(f: FieldState): Promise<boolean> {
     jbdBus.send(buildReadParam(f.index!, 1))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
     const raw = parseParamResponse(resp)
-    if (raw === null) { f.status = 'fail'; return false }
+    if (raw === null) {
+      if (tmpFactory && autoFactory.value) await exitFactory()
+      f.status = 'fail'; return false
+    }
     const { level, delay } = splitScd(raw)
     const peer = scdPeer(f)
     if (f.scdPart === 'level') f.value = level
@@ -1191,6 +1208,7 @@ async function readField(f: FieldState): Promise<boolean> {
     f.dirty = false
     f.status = 'ok'
     if (peer) { peer.dirty = false; peer.status = 'ok' }
+    if (tmpFactory && autoFactory.value) await exitFactory()
     return true
   }
   // 下拉选项字段：value 直接存原始寄存器值
@@ -1738,6 +1756,12 @@ async function sendFields(fields: FieldState[]) {
   if (!fields.length) return
   busy.value = true
   let ok = 0, fail = 0
+  // 收集写入成功的字段及其期望值快照，待全部写完后统一串行回读校验。
+  // 禁止在循环内并发触发 verifyField：多个字段的回读会经 jbdBus 的 onceResponse(0xfa)
+  // 互相抢帧（onceResponse 仅按命令码 0xfa 过滤、不区分寄存器地址），导致后发字段
+  // （如 BMS 编码信息 72，位于生产厂商 56 之后）的读响应被前序字段的读/写响应抢占，
+  // 解析为空 → 校验误报。统一串行回读可彻底消除抢帧，且与「全部读取」走同源 readField。
+  const verifyQueue: { f: FieldState; exp: WriteExpect }[] = []
   if (autoFactory.value && !inFactory.value) {
     const entered = await enterFactory()
     if (!entered) { busy.value = false; return }
@@ -1762,7 +1786,7 @@ async function sendFields(fields: FieldState[]) {
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       } else {
         ok++
-        void verifyField(f, exp)
+        verifyQueue.push({ f, exp })
         if (peer) { peer.status = 'ok'; peer.dirty = false }
       }
       continue
@@ -1790,7 +1814,7 @@ async function sendFields(fields: FieldState[]) {
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       } else {
         ok++
-        void verifyField(f, exp)
+        verifyQueue.push({ f, exp })
       }
       continue
     }
@@ -1804,7 +1828,7 @@ async function sendFields(fields: FieldState[]) {
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       } else {
         ok++
-        void verifyField(f, exp)
+        verifyQueue.push({ f, exp })
       }
       continue
     }
@@ -1827,9 +1851,18 @@ async function sendFields(fields: FieldState[]) {
     } else {
       f.status = 'ok'; f.dirty = false
       ok++
+      verifyQueue.push({ f, exp })
     }
   }
   if (autoFactory.value) await exitFactory()
+  // 全部写完后，统一串行回读校验（与「全部读取」同源 readField）：
+  // 此时已退出工厂模式，readField 的 ASCII/scd 分支会临时 enter+exit 保证解锁态读取可靠，
+  // 且回读与写彻底串行，杜绝并发抢帧（BMS 编码信息 72 等关键字段不再误报）。
+  if (verifyQueue.length) {
+    for (const { f, exp } of verifyQueue) {
+      await verifyField(f, exp)
+    }
+  }
   progress.value = 100
   busy.value = false
   ElMessage[fail ? 'warning' : 'success'](`参数下发完成：${ok} 成功，${fail} 失败`)
