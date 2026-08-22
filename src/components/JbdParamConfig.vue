@@ -1325,29 +1325,29 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
     f.dirty = false
     if (peer) { peer.status = 'ok'; peer.dirty = false }
   }
-  // scd 字段：复用 readField 回读（与「读取全部」同源、已验证可靠回填 UI），
-  // 直接比对 readField 写回的 f.value / peer.value（即 UI 显示的档位），
-  // 不再并行发独立读帧抢总线（批量下发场景下多 0xfa 等待器并发易抢错帧）。
-  // 校验策略：完整比对 level（保护值）与 delay（延时）档位（均按 0~15 档位值），
-  // 任一不一致即判为校验失败并标红，如实反馈设备未接受该值。
+  // scd 复合字段（寄存器 40 二级过流 / 41 短路，各 2 字节）：
+  // 直接比对「整寄存器下发字节」与「整寄存器回读字节」，不做 splitScd 拆分比对。
+  // 设备如实回写则整值相等 → 保护值档 + 延时档两个 part 自然都一致（整寄存器对得上）；
+  // 整值不等才判校验失败，并把 level/delay 两个 part 一并标红，便于定位。
   if (f.kind === 'scd' && f.index !== undefined) {
     const okRead = await readField(f)
     if (!okRead) {
       failBoth('读取超时或无响应（设备未正确返回下发结果）')
       return
     }
-    // readField 已把 f.value / peer.value 设为回读档位（UI 显示值）
+    // readField 已把整寄存器回读值拆显到 f.value / peer.value（UI 显示档位），
+    // 这里按 scdPart 位置重组出整寄存器值，与下发时的整寄存器值(exp.raw)直接比对。
     const selfGot = Number(f.value ?? 0)
     const peerGot = peer ? Number(peer.value ?? 0) : 0
-    // 期望值：从 exp.raw 按当前字段的 scdPart 取对应档位
-    const expSelf = f.scdPart === 'level'
-      ? (exp.raw! >> 4) & 0x0f   // level 在高 4 位
-      : (exp.raw! & 0x0f)        // delay 在低 4 位
-    const gotSelf = f.scdPart === 'level' ? selfGot : peerGot
-    if (gotSelf !== expSelf) {
+    const gotRaw = f.scdPart === 'level'
+      ? combineScd(selfGot, peerGot) & 0xffff   // self=level 高4位, peer=delay 低4位
+      : combineScd(peerGot, selfGot) & 0xffff   // self=delay 低4位, peer=level 高4位
+    if (gotRaw !== (exp.raw! & 0xffff)) {
       const eL = (exp.raw! >> 4) & 0x0f
       const eD = exp.raw! & 0x0f
-      failBoth(`下发值与读取不一致：下发(${f.scdPart === 'level' ? '保护值' : '延时'}档=0x${expSelf.toString(16)}) 读取(档=0x${gotSelf.toString(16)}）[整寄存器: 下发 level=0x${eL.toString(16)} delay=0x${eD.toString(16)}]`)
+      const gL = (gotRaw >> 4) & 0x0f
+      const gD = gotRaw & 0x0f
+      failBoth(`下发值与读取不一致：下发(整寄存器=0x${exp.raw!.toString(16).padStart(4, '0')} level=0x${eL.toString(16)} delay=0x${eD.toString(16)}) 读取(整寄存器=0x${gotRaw.toString(16).padStart(4, '0')} level=0x${gL.toString(16)} delay=0x${gD.toString(16)})`)
       return
     }
     passBoth()
