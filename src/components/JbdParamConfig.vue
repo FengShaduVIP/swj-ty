@@ -1357,8 +1357,17 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
   }
 }
 
-/** scd 整寄存器读取（带两次重试，共3次尝试），返回 16 位 raw；超时/无响应返回 null */
+/** scd 整寄存器读取（带重试，返回 16 位 raw；超时/无响应返回 null）
+ *
+ *  重要：0xFA 寄存器（尤其是 scd 保护参数 40/41）读取前必须先发送芯片指令
+ *  (buildEnterFactory / CHIP_TYPE + 密码 0x5678) 解锁设备，否则设备可能返回
+ *  缓存旧值或未解锁态默认值，导致校验误报。
+ *  这与「读取全部」(readAll) 先 readChip() 再读寄存器的流程一致。 */
 async function readScdRawRetry(index: number): Promise<number | null> {
+  // 确保设备处于解锁态（与 readAll → readChip 流程对齐）
+  if (autoFactory.value && !inFactory.value) {
+    await enterFactory()
+  }
   for (let attempt = 0; attempt < 3; attempt++) {
     jbdBus.send(buildReadParam(index, 1))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
