@@ -132,6 +132,14 @@
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
       <el-button size="small" @click="toggleCollapseAll">{{ allCollapsed ? '展开全部' : '折叠全部' }}</el-button>
+      <div class="comm-strip" :class="{ empty: !commStrip.length }" title="实时通信日志">
+        <div v-if="!commStrip.length" class="comm-empty">暂无通信日志</div>
+        <div v-for="(l, i) in commStrip" :key="i" class="comm-line" :class="'log-' + l.type">
+          <span class="c-time">{{ l.time }}</span>
+          <span class="c-tag">{{ tagLabel(l.type) }}</span>
+          <span class="c-text mono-font">{{ l.content }}</span>
+        </div>
+      </div>
       <span class="pc-count" v-if="searchText">匹配 {{ matchCount }} 项</span>
     </div>
     <div class="groups" :class="{ dragging: dragMode }">
@@ -377,7 +385,17 @@ interface FieldState extends FieldDef {
   status: FieldStatus
 }
 
-const props = defineProps<{ connected: boolean }>()
+interface CommLogEntry {
+  time: string
+  type: 'send' | 'recv' | 'error' | 'info'
+  content: string
+}
+const props = defineProps<{ connected: boolean; logs?: CommLogEntry[] }>()
+// 工具栏紧凑通讯日志条：只保留最近 2 行，配合 CSS 末尾对齐实现自动滚动效果
+const commStrip = computed(() => (props.logs || []).slice(-2))
+function tagLabel(type: string): string {
+  return { send: '发送', recv: '接收', error: '错误', info: '信息' }[type] ?? type
+}
 
 type ImportStatus = 'ok' | 'fail' | undefined
 interface ImportedParam {
@@ -831,14 +849,14 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
       { label: 'GPS关闭延时', index: 105, unit: 'S', decimals: 0 },
     ],
   },
-  // 4. 系统设置（4 项 / 3 列 × 2 行）
+  // 4. 系统设置（6 项 / 3 列 × 2 行）
   {
     title: '系统设置',
     order: 4,
     fields: [
       { label: '休眠时间', index: 122, unit: 'S', decimals: 0 },
       { label: '容量修正间隔', index: 113, unit: 'S', decimals: 0 },
-      { label: '序列号', index: 6, customDisplay: 'serialRaw', readOnly: true },
+      { label: '最小识别电流', index: 121, unit: 'mA', decimals: 0 },
       { label: '循环次数', index: 7, unit: '次', decimals: 0 },
     ],
   },
@@ -849,6 +867,7 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
     fields: [
       { label: '标称容量', index: 0, unit: 'Ah', decimals: 2, step: 0.01 },
       { label: '循环容量', index: 1, unit: 'Ah', decimals: 2, step: 0.01 },
+      { label: '满冲容量', index: 112, unit: 'Ah', decimals: 2, step: 0.01 },
     ],
   },
   // 9. 温度设置（12 项 / 3 列 × 4 行）
@@ -1131,14 +1150,7 @@ async function readField(f: FieldState): Promise<boolean> {
     ElMessage.warning(`[${f.label}] 无可读取寄存器`)
     return false
   }
-  // scd 复合保护字段读取前需先发送芯片指令(CMD.CHIP_TYPE+密码)解锁设备，
-  // 否则设备可能返回缓存旧值/未解锁默认值（与 readAll→readChip 对齐）。
-  // 仅在「本调用前不在工厂态」时临时进入，并在读取后退出，避免把设备遗留锁在
-  // 工厂模式（影响后续实时监测/其他字段）；readAll 已统一 enter 的场景不重复处理。
-  let tmpFactory = false
-  if (f.kind === 'scd' && autoFactory.value && !inFactory.value) {
-    tmpFactory = await enterFactory()
-  }
+  // 读取参数不进入/退出工厂模式（与「读取全部」保持一致），普通模式即可读。
   f.status = 'reading'
   // 位开关：读一次位图，所有同位图字段同步
   if (isBitSwitch(f)) {
@@ -1155,29 +1167,20 @@ async function readField(f: FieldState): Promise<boolean> {
     }
     return true
   }
-  // ASCII 块：读 N 个寄存器
+  // ASCII 块：读 N 个寄存器（普通模式即可读取，不进入工厂模式）
   // 蓝牙名称(index 88)读取即 0xFA 88~103 条形码信息，显示其条形码数值；
   // 仅下发蓝牙名称时才使用专用 0xA2 指令（见 sendFields 写分支）。
-  // 读取前需先进入工厂模式解锁设备（与 scd 分支对齐），否则普通模式下
-  // BMS 编码信息(72)/生产厂商(56) 等 ASCII 块可能返回空字节流，导致校验误报。
-  // 同样采用临时进入+读取后退出，避免遗留工厂态。
-  if (f.ascii && autoFactory.value && !inFactory.value) {
-    tmpFactory = await enterFactory()
-  }
   if (f.ascii) {
     const len = f.ascii_len ?? 8
     jbdBus.send(buildReadParam(f.index!, len))
     const resp = await jbdBus.onceResponse(1500, 0xfa)
     if (!resp || resp.timeout || resp.status !== 0x00) {
-      if (tmpFactory && autoFactory.value) await exitFactory()
       f.status = 'fail'; return false
     }
     const text = parseAsciiResponse(resp, len * 2)
     f.value = text
     f.dirty = false
     f.status = 'ok'
-    // 临时进入工厂态则退出，恢复普通模式（避免遗留锁态影响后续交互）
-    if (tmpFactory && autoFactory.value) await exitFactory()
     return true
   }
   // date / serialRaw：读 raw 值，由 customDisplay 格式化
@@ -1197,7 +1200,6 @@ async function readField(f: FieldState): Promise<boolean> {
     const resp = await jbdBus.onceResponse(1500, 0xfa)
     const raw = parseParamResponse(resp)
     if (raw === null) {
-      if (tmpFactory && autoFactory.value) await exitFactory()
       f.status = 'fail'; return false
     }
     const { level, delay } = splitScd(raw)
@@ -1208,7 +1210,6 @@ async function readField(f: FieldState): Promise<boolean> {
     f.dirty = false
     f.status = 'ok'
     if (peer) { peer.dirty = false; peer.status = 'ok' }
-    if (tmpFactory && autoFactory.value) await exitFactory()
     return true
   }
   // 下拉选项字段：value 直接存原始寄存器值
@@ -1854,15 +1855,16 @@ async function sendFields(fields: FieldState[]) {
       verifyQueue.push({ f, exp })
     }
   }
-  if (autoFactory.value) await exitFactory()
   // 全部写完后，统一串行回读校验（与「全部读取」同源 readField）：
-  // 此时已退出工厂模式，readField 的 ASCII/scd 分支会临时 enter+exit 保证解锁态读取可靠，
-  // 且回读与写彻底串行，杜绝并发抢帧（BMS 编码信息 72 等关键字段不再误报）。
+  // 仍在同一个工厂会话内（尚未退出），回读与写彻底串行，杜绝并发抢帧
+  // （BMS 编码信息 72 等关键字段不再误报）；校验读取在工厂态下更可靠。
   if (verifyQueue.length) {
     for (const { f, exp } of verifyQueue) {
       await verifyField(f, exp)
     }
   }
+  // 整批下发（写 + 回读校验）全部结束，最后统一退出工厂模式一次 —— 全程只进/退一次。
+  if (autoFactory.value) await exitFactory()
   progress.value = 100
   busy.value = false
   ElMessage[fail ? 'warning' : 'success'](`参数下发完成：${ok} 成功，${fail} 失败`)
@@ -2357,6 +2359,54 @@ function exportConfig() {
 /* ===== 参数搜索工具栏 & 分组折叠 ===== */
 .pc-toolbar { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); flex-wrap: wrap; }
 .pc-count { font-size: var(--fs-caption); color: var(--text-tertiary); }
+/* 工具栏紧凑通讯日志条：高度对齐 small 按钮，固定 2 行、末端对齐实现自动滚动 */
+.comm-strip {
+  flex: 1 1 220px;
+  min-width: 180px;
+  height: 32px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  gap: 1px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-sizing: border-box;
+}
+.comm-strip.empty { justify-content: center; }
+.comm-empty { font-size: var(--fs-caption); color: var(--text-tertiary); line-height: 30px; }
+.comm-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 15px;
+  line-height: 15px;
+  font-size: var(--fs-num-xs);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.comm-line .c-time {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums slashed-zero;
+  flex-shrink: 0;
+}
+.comm-line .c-tag {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  line-height: 15px;
+}
+.comm-line .c-text { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }
+.comm-line.log-send .c-tag  { background: var(--brand-bg-subtle); color: var(--brand-text); }
+.comm-line.log-recv .c-tag  { background: var(--ok-bg);           color: var(--ok); }
+.comm-line.log-error .c-tag { background: var(--critical-bg);     color: var(--critical); }
+.comm-line.log-info .c-tag  { background: var(--neutral-bg);      color: var(--neutral-state); }
+.comm-line.log-error .c-text { color: var(--critical); }
 .collapse-btn { margin-left: var(--space-1); padding: 2px 6px; color: var(--text-secondary); }
 .collapse-btn:hover { color: var(--info); }
 .sec-collapsed {

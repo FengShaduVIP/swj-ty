@@ -143,7 +143,7 @@
             @clear="dataLogs = []"
           />
           <JbdPanel v-show="active === 'monitor'" :connected="connected" />
-          <JbdParamConfig v-show="active === 'config'" :connected="connected" />
+          <JbdParamConfig v-show="active === 'config'" :connected="connected" :logs="dataLogs" />
           <DispatchLog v-show="active === 'log'" />
         </section>
       </main>

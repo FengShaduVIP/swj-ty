@@ -55,20 +55,19 @@
                   </span>
                 </div>
                 <div class="kv">
-                  <span class="kv-label">满充容量</span>
-                  <span class="kv-num">
-                    <span class="num">{{ fmt(fullChargeAh, 2) }}</span>
-                    <span class="kv-unit">AH</span>
-                  </span>
-                </div>
-                <div class="kv">
                   <span class="kv-label">负载功率</span>
                   <span class="kv-num">
                     <span class="num">{{ fmt(powerW, 2) }}</span>
                     <span class="kv-unit">W</span>
                   </span>
                 </div>
-                <div class="kv kv--empty" />
+                <div class="kv">
+                  <span class="kv-label">满充容量</span>
+                  <span class="kv-num">
+                    <span class="num">{{ fmt(fullChargeAh, 2) }}</span>
+                    <span class="kv-unit">AH</span>
+                  </span>
+                </div>
                 <div class="kv kv--toggle">
                   <span class="kv-label">充电开关</span>
                   <el-switch :model-value="chargeSwitch" disabled size="default" />
