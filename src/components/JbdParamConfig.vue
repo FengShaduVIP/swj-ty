@@ -245,8 +245,8 @@
                 </template>
                 <!-- 自定义展示字段（来自 useJbd / 派生） -->
                 <span v-else-if="f.customDisplay" class="custom-val mono">{{ customDisplayValue(f) }}</span>
-                <!-- TODO / 只读字段（无可写寄存器） -->
-                <span v-else-if="f.readOnly" class="custom-val mono">—</span>
+                <!-- 只读字段：有 index 的显示设备真实值（如满充容量随标称容量镜像），无 index 的占位显示 — -->
+                <span v-else-if="f.readOnly" class="custom-val mono">{{ f.index !== undefined && f.value != null ? formatFieldValue(f) + (f.unit ? ' ' + f.unit : '') : '—' }}</span>
                 <!-- 下拉选项字段 / 复合保护字段(scd)：显示友好名称，下发原始 value -->
                 <template v-else-if="f.options || f.kind === 'scd'">
                   <el-select
@@ -867,7 +867,7 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
     fields: [
       { label: '标称容量', index: 0, unit: 'Ah', decimals: 2, step: 0.01 },
       { label: '循环容量', index: 1, unit: 'Ah', decimals: 2, step: 0.01 },
-      { label: '满充容量', index: 112, unit: 'Ah', decimals: 2, step: 0.01 },
+      { label: '满充容量', index: 112, unit: 'Ah', decimals: 2, step: 0.01, readOnly: true },
     ],
   },
   // 9. 温度设置（12 项 / 3 列 × 4 行）
@@ -1428,6 +1428,14 @@ function markWriteOkWithVerify(f: FieldState, exp: WriteExpect): true {
 
 async function writeField(f: FieldState): Promise<boolean> {
   if (!canWrite(f)) return false
+  // 标称容量单独下发时，也同步镜像满充容量（与批量下发/导入/强制下发行为一致）
+  if (f.index === 0) {
+    const full = allFields.value.find((x) => x.index === 112)
+    if (full && f.value != null) {
+      full.value = f.value
+      await sendFields([full])
+    }
+  }
   // 写入前捕获期望值快照（校验用），必须在下发指令发出前完成
   const exp = captureExpect(f)
   f.status = 'writing'
@@ -1870,6 +1878,20 @@ async function sendFields(fields: FieldState[]) {
   ElMessage[fail ? 'warning' : 'success'](`参数下发完成：${ok} 成功，${fail} 失败`)
 }
 
+// 满充容量(index 112) 与 标称容量(index 0) 保持一致：
+// 只要本次下发的字段集合包含「标称容量」，就额外把满充容量(112)按标称容量的值下发一遍。
+// 满充容量自身为只读字段，不单独编辑，其值恒等于标称容量。
+function injectFullChargeMirror(fields: FieldState[]): FieldState[] {
+  const nominal = fields.find((f) => f.index === 0)
+  if (!nominal || nominal.value == null) return fields
+  const full = allFields.value.find((f) => f.index === 112)
+  if (!full) return fields
+  // 只读展示也跟随标称容量，让用户直观看到「满充容量 = 标称容量」
+  full.value = nominal.value
+  if (fields.includes(full)) return fields
+  return [...fields, full]
+}
+
 async function writeAll() {
   if (!props.connected) return
   // 导入模板后无需手动修改：把已导入模板涉及的字段重新标记为待下发，
@@ -1881,7 +1903,7 @@ async function writeAll() {
     (f) => f.dirty && !f.customDisplay && !f.readOnly && !isBitSwitch(f) && f.index !== undefined && !f.needPassword,
   )
   if (!dirty.length) return
-  await sendFields(dirty)
+  await sendFields(injectFullChargeMirror(dirty))
 }
 
 // 强制下发：把当前已读取/已显示的字段值全部下发一遍，不依赖脏标记。
@@ -1906,7 +1928,7 @@ async function forceWriteAll() {
   // 同时页面模板参数值保持不变，支持用同一套参数反复下发多组电池。
   j.chipType.value = null
   await j.readChip()
-  await sendFields(fields)
+  await sendFields(injectFullChargeMirror(fields))
   // 落地：把本次强制下发的参数快照写入本地记录库（时间 + 蓝牙名称 + 具体参数）
   const btField = fields.find((f) => f.key === 'bt-name')
   const btName = btField && btField.value != null ? String(btField.value) : '—'
@@ -2052,7 +2074,18 @@ async function sendAllImported() {
     const entered = await enterFactory()
     if (!entered) { busy.value = false; return }
   }
-  const list = importedParams.value
+  const nominalImport = importedParams.value.find((p) => p.index === 0)
+  const list = [...importedParams.value]
+  // 满充容量(112) 与 标称容量(0) 一致：导入含标称容量时，满充容量强制=标称容量一并下发
+  // （模板已含满充容量则覆盖其值；不含则追加）。满充容量只读，不单独设置下发值。
+  if (nominalImport) {
+    const fullEntry = { ...nominalImport, index: 112, label: '满充容量', unit: 'Ah' }
+    const fullIdx = list.findIndex((p) => p.index === 112)
+    if (fullIdx >= 0) list[fullIdx] = fullEntry
+    else list.push(fullEntry)
+    const fullField = allFields.value.find((f) => f.index === 112)
+    if (fullField) fullField.value = nominalImport.value
+  }
   const sent = new Set<number>() // 同一寄存器只写一次（SCD 的 level/delay 两行共享同一 raw）
   for (let i = 0; i < list.length; i++) {
     progress.value = Math.round((i / list.length) * 100)

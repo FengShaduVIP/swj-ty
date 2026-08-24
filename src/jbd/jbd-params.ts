@@ -119,7 +119,7 @@ function buildTable(): ParamDef[] {
     { name: 'VOL-30%', unit: 'mV', scale: 1 },
     { name: 'VOL-10%', unit: 'mV', scale: 1 },
     { name: 'VOL-100%', unit: 'mV', scale: 1 },
-    { name: '学习容量', unit: 'Ah', scale: 0.01 },
+    { name: '满充容量', unit: 'Ah', scale: 0.01 },
     { name: '修正间隔', unit: 'S', scale: 1 },
     { name: '额定电压', unit: 'V', scale: 0.1 },
     { name: '额定电流', unit: 'A', scale: 1 },
