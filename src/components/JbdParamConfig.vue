@@ -867,7 +867,7 @@ const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupA
     fields: [
       { label: '标称容量', index: 0, unit: 'Ah', decimals: 2, step: 0.01 },
       { label: '循环容量', index: 1, unit: 'Ah', decimals: 2, step: 0.01 },
-      { label: '满冲容量', index: 112, unit: 'Ah', decimals: 2, step: 0.01 },
+      { label: '满充容量', index: 112, unit: 'Ah', decimals: 2, step: 0.01 },
     ],
   },
   // 9. 温度设置（12 项 / 3 列 × 4 行）
