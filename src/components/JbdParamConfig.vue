@@ -1105,7 +1105,14 @@ async function confirmResetMcu() {
   } catch {
     return // 用户取消
   }
+  // 控制指令在部分固件下需先进入工厂模式才允许执行：
+  // 发送前临时进入工厂态（若当前未处于工厂态），发送后退出，避免遗留锁态。
+  let tmpFactory = false
+  if (autoFactory.value && !inFactory.value) {
+    tmpFactory = await enterFactory()
+  }
   await jbdBus.send(buildControlCommand(CONTROL_FUNC.RESET_MCU))
+  if (tmpFactory && autoFactory.value) await exitFactory()
   ElMessage.success('已发送复位 MCU 指令')
 }
 
@@ -1795,7 +1802,7 @@ async function sendFields(fields: FieldState[]) {
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       } else {
         ok++
-        verifyQueue.push({ f, exp })
+        if (!f.readOnly) verifyQueue.push({ f, exp })
         if (peer) { peer.status = 'ok'; peer.dirty = false }
       }
       continue
@@ -1823,7 +1830,7 @@ async function sendFields(fields: FieldState[]) {
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       } else {
         ok++
-        verifyQueue.push({ f, exp })
+        if (!f.readOnly) verifyQueue.push({ f, exp })
       }
       continue
     }
@@ -1837,7 +1844,7 @@ async function sendFields(fields: FieldState[]) {
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
       } else {
         ok++
-        verifyQueue.push({ f, exp })
+        if (!f.readOnly) verifyQueue.push({ f, exp })
       }
       continue
     }
@@ -1860,7 +1867,7 @@ async function sendFields(fields: FieldState[]) {
     } else {
       f.status = 'ok'; f.dirty = false
       ok++
-      verifyQueue.push({ f, exp })
+      if (!f.readOnly) verifyQueue.push({ f, exp })
     }
   }
   // 全部写完后，统一串行回读校验（与「全部读取」同源 readField）：
