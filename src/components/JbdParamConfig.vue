@@ -10,6 +10,11 @@
           <el-button size="small" type="primary" :disabled="!connected || busy" :loading="busy" @click="writeAll"><el-icon><Upload /></el-icon> 全部写入({{ dirtyCount }})</el-button>
           <el-button size="small" type="warning" :disabled="!connected || busy" :loading="busy" @click="forceWriteAll"><el-icon><Promotion /></el-icon> 强制下发</el-button>
           <el-button size="small" @click="openTemplateDialog"><el-icon><FolderOpened /></el-icon> 导入配置</el-button>
+          <span v-if="importedSourceName" class="import-source" :title="importedSourceName">
+            <el-icon><Document /></el-icon>
+            <span class="src-name">{{ importedSourceName }}</span>
+            <el-icon class="src-clear" @click="importedSourceName = ''"><Close /></el-icon>
+          </span>
           <el-button size="small" @click="saveAsTemplate"><el-icon><Files /></el-icon> 存为模板</el-button>
           <el-button size="small" @click="exportConfig"><el-icon><Download /></el-icon> 导出配置</el-button>
           <el-button size="small" :type="dragMode ? 'warning' : 'default'" @click="dragMode = !dragMode">
@@ -330,7 +335,7 @@
 <script setup lang="ts">
 import { ref, computed, reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Setting, Refresh, Upload, FolderOpened, Download, Files, Promotion, Rank, Operation, RefreshLeft, Delete, Edit, Search, ArrowDown, ArrowRight } from '@element-plus/icons-vue'
+import { Setting, Refresh, Upload, FolderOpened, Download, Files, Promotion, Rank, Operation, RefreshLeft, Delete, Edit, Search, ArrowDown, ArrowRight, Document, Close } from '@element-plus/icons-vue'
 import { jbdBus } from '@/jbd/jbd-bus'
 import {
   buildReadParam, buildWriteParam, buildSetBtName,
@@ -404,6 +409,8 @@ interface ImportedParam {
 }
 const importedParams = ref<ImportedParam[]>([])
 const importDialogVisible = ref(false)
+// 当前已导入的来源名称（模板名或文件名），用于在主页面上提示用户选的是哪个
+const importedSourceName = ref<string>('')
 
 // ====== 本地配置模板（localStorage） ======
 interface ConfigTemplate {
@@ -446,6 +453,7 @@ function openTemplateDialog() {
 // 从模板列表中选择一个模板直接导入
 function importFromTemplate(t: ConfigTemplate) {
   templateDialogVisible.value = false
+  importedSourceName.value = '模板：' + t.name
   applyImport(t.data)
 }
 
@@ -1996,6 +2004,7 @@ async function writeGroupBitmap(g: { title: string; fields: FieldState[] }, bitI
 function onFileChange(uploadFile: any) {
   const file = uploadFile?.raw as File | undefined
   if (!file) return
+  importedSourceName.value = '文件：' + file.name
   const reader = new FileReader()
   reader.onload = () => {
     try {
@@ -2189,6 +2198,24 @@ function exportConfig() {
 .panel-title .el-icon { color: var(--brand); }
 .header-actions { margin-left: auto; display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .tip { font-size: var(--fs-caption); color: var(--text-tertiary); }
+
+/* 导入来源标签 */
+.import-source {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  max-width: 280px; padding: 2px 4px 2px 8px;
+  background: rgba(26, 115, 232, 0.10);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-caption); color: var(--text-secondary);
+  line-height: 1.4; white-space: nowrap;
+}
+.import-source .el-icon { color: var(--brand); font-size: 14px; flex: none; }
+.import-source .src-name {
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis;
+  font-weight: var(--fw-medium); color: var(--text-primary);
+}
+.import-source .src-clear { cursor: pointer; color: var(--text-tertiary); transition: color .15s; }
+.import-source .src-clear:hover { color: var(--critical); }
 .progress-bar { padding: 0 var(--space-6); }
 
 /* 左右两列容器布局：每列为独立纵向流，列内卡片自然堆叠；
