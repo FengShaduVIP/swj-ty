@@ -77,6 +77,9 @@
           告警 {{ ui.alarmCount }}
         </button>
         <span class="sb-rate">采样 <b class="num">{{ rate }}</b> Hz</span>
+        <button class="sb-icon" title="检查更新" :disabled="updating" @click="onCheckUpdate">
+          <el-icon :size="16" :class="{ 'spin': updating }"><Refresh /></el-icon>
+        </button>
         <button class="sb-icon" title="设置" @click="settingsOpen = true">
           <el-icon :size="16"><Setting /></el-icon>
         </button>
@@ -632,6 +635,9 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .sb-icon:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-strong); }
+.sb-icon:disabled { opacity: 0.55; cursor: default; }
+.spin { animation: updater-spin 0.9s linear infinite; }
+@keyframes updater-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 .sb-clock { font-size: var(--fs-caption); color: var(--text-secondary); }
 .sb-ver { font-size: var(--fs-caption); color: var(--text-tertiary); }
 
