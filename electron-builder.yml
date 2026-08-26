@@ -7,10 +7,15 @@ copyright: Copyright © 2026 天一锂能新能源
 # 无需再 node-gyp 编译。GitHub windows-latest 镜像默认无 VS 编译工具，重编译必失败。
 npmRebuild: false
 
-# 禁止 electron-builder 自动发布：CI 环境会尝试发布到 GitHub Releases 并索要
-# GH_TOKEN。我们只需本地产出 exe，发布交给 workflow 里的
-# softprops/action-gh-release 步骤处理。
-publish: null
+# 配置 GitHub provider —— 这是 electron-builder 生成 latest.yml 的前提条件
+# （electron-updater 靠 latest.yml 比对版本，缺它自动更新无法工作）。
+# 注意：构建命令带 --publish never，因此 electron-builder 只生成元数据、
+# 不会真的上传、也不会索要 GH_TOKEN；实际发布仍由 workflow 里的
+# softprops/action-gh-release 步骤完成。
+publish:
+  provider: github
+  owner: FengShaduVIP
+  repo: swj-ty
 
 directories:
   output: release
@@ -31,6 +36,10 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
+  # 强制纯 ASCII 产物名：默认名为「天一BMS Setup x.y.z.exe」，上传 GitHub Release
+  # 后会被改写成 BMS.Setup.x.y.z.exe，与 latest.yml 里记录的 path 不一致，
+  # 导致 electron-updater 下载 404。用固定英文名规避。
+  artifactName: TianyiBMS-Setup-${version}.${ext}
 
 mac:
   target:

@@ -1,6 +1,6 @@
 {
   "name": "serial-modbus-tool",
-  "version": "2.2.1",
+  "version": "2.3.2",
   "productName": "天一BMS",
   "author": "BaoMihua",
   "description": "天一BMS - 锂电池 PACK 上位机监控软件 (JBD BMS) - Electron + Element Plus",
@@ -10,8 +10,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "electron:dev": "vite",
-    "electron:build": "vite build && electron-builder",
-    "electron:build:win": "vite build && electron-builder --win"
+    "electron:build": "vite build && electron-builder --publish never",
+    "electron:build:win": "vite build && electron-builder --win --publish never"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
