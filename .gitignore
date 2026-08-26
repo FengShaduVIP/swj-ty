@@ -13,3 +13,4 @@ release/
 /.release-*/
 /.verify-out/
 /dist-bak/
+/.zcode/

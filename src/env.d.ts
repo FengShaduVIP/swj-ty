@@ -59,6 +59,40 @@ interface SerialAPI {
   removeAllListeners: () => void
 }
 
+// 自动更新 API 类型（注入自 preload.ts）
+type UpdaterState =
+  | 'idle' | 'checking' | 'available' | 'not-available'
+  | 'downloading' | 'downloaded' | 'error' | 'dev-disabled'
+
+interface UpdaterStatus {
+  state: UpdaterState
+  currentVersion: string
+  latestVersion?: string
+  releaseNotes?: string
+  progress?: { percent: number; bytesPerSecond: number; transferred: number; total: number }
+  error?: string
+  checkedAt?: number
+  source?: string
+}
+
+interface UpdaterConfig {
+  enabled: boolean
+  source: string
+  checkOnStartup: boolean
+  checkIntervalMs: number
+  autoDownload: boolean
+  currentVersion: string
+}
+
+interface UpdaterAPI {
+  checkNow: () => Promise<{ ok: boolean; state?: string; error?: string }>
+  quitAndInstall: () => Promise<{ ok: boolean; error?: string }>
+  getConfig: () => Promise<UpdaterConfig>
+  onStatus: (callback: (status: UpdaterStatus) => void) => void
+  removeStatusListeners: () => void
+}
+
 interface Window {
   serialAPI: SerialAPI
+  updaterAPI: UpdaterAPI
 }

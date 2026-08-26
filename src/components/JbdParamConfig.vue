@@ -193,6 +193,7 @@
                   v-if="f.ascii"
                   :model-value="f.value ?? ''"
                   :readonly="isReadOnly(f)"
+                  :disabled="busy"
                   size="small"
                   style="flex: 1"
                   placeholder="—"
@@ -237,7 +238,7 @@
                     size="small"
                     style="flex: 1"
                     placeholder="选择日期"
-                    :disabled="!connected || f.status === 'reading'"
+                    :disabled="!connected || busy || f.status === 'reading'"
                     @update:model-value="(v: any) => onDateInput(f, v)"
                   />
                   <el-button
@@ -258,7 +259,7 @@
                     :model-value="f.value"
                     size="small"
                     style="flex: 1"
-                    :disabled="(f.kind === 'scd' && !isChipScdKnown(j.chipType.value)) || !connected || f.status === 'reading'"
+                    :disabled="(f.kind === 'scd' && !isChipScdKnown(j.chipType.value)) || !connected || busy || f.status === 'reading'"
                     :placeholder="(f.kind === 'scd' && !isChipScdKnown(j.chipType.value)) ? '未知芯片，请先读取芯片类型' : ''"
                     @update:model-value="(v: any) => onSelectChange(f, v)"
                   >
@@ -284,6 +285,7 @@
                   type="number"
                   size="small"
                   style="flex: 1"
+                  :disabled="busy"
                   :step="f.step ?? 1"
                   :min="f.min"
                   :max="f.max"
@@ -342,6 +344,7 @@ import {
   buildEnterFactory, buildExitFactory,
   buildControlCommand, CONTROL_FUNC,
 } from '@/jbd/jbd-protocol'
+import type { Frame } from '@/jbd/jbd-protocol'
 import { paramRawToDisplay, paramDisplayToRaw, paramFormat, paramDisplayDecimals, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs, scdDelayMaxIndex, isChipScdKnown } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
 import { addDispatchRecord, type DispatchParam } from '@/db/dispatchLog'
@@ -620,6 +623,8 @@ function canRead(f: FieldState): boolean {
 
 function canWrite(f: FieldState): boolean {
   if (!props.connected) return false
+  // 批量读/写下发进行中禁止单字段下发，避免并发 0xFA 等待者互相抢帧
+  if (busy.value) return false
   if (f.readOnly) return false
   // 生产日期：customDisplay 但可写（日期选择器 → raw → 下发）
   if (f.customDisplay === 'date' && f.index !== undefined) return f.value !== null
@@ -1156,6 +1161,33 @@ function parseParamResponse(resp: any): number | null {
   return raw
 }
 
+// ====== 寄存器感知的 0xFA 应答等待 ======
+// onceResponse 仅按命令码 0xFA 配对应答，先前请求「迟到」的帧会被当前等待误收，
+// 而 parseParamResponse/parseAsciiResponse 都不校验响应里的寄存器地址 ——
+// 回读值会取到别的寄存器，造成校验误报（错误消息里的『读取』值本身就是错的数据）
+// 或错位值恰好相等时的漏报。本函数在总超时预算内循环等待，只接受
+// 「命令码 0xFA + 状态 0x00 + 起始寄存器与请求一致（count ≥ minCount）」的帧，
+// 其余脏帧丢弃后继续等剩余预算；预算耗尽返回 null（与超时同义）。
+async function awaitParamResponse(expectReg: number, timeoutMs = 1500, minCount = 1): Promise<Frame | null> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const rest = deadline - Date.now()
+    if (rest <= 0) return null
+    const resp = await jbdBus.onceResponse(rest, 0xfa)
+    if (!resp || resp.timeout) return null
+    if (resp.status !== 0x00 || !resp.data || resp.data.length < 3) continue
+    const reg = (resp.data[0] << 8) | resp.data[1]
+    if (reg !== expectReg || resp.data[2] < minCount) continue
+    return resp
+  }
+}
+
+// ====== 总线世代计数 ======
+// 批量操作（读取全部 / 本组读取 / 下发）开始时自增；单写下发遗留的后台回读校验
+// （void verifyField，不 await）检测到世代变化即静默退出，避免其 0xFA 读取
+// 与批量流程的帧互抢导致校验误报。批量自身内部串行校验不受影响。
+let busEpoch = 0
+
 // ====== 读取/写入单个字段 ======
 async function readField(f: FieldState): Promise<boolean> {
   if (!props.connected) return false
@@ -1170,7 +1202,7 @@ async function readField(f: FieldState): Promise<boolean> {
   // 位开关：读一次位图，所有同位图字段同步
   if (isBitSwitch(f)) {
     jbdBus.send(buildReadParam(f.bitIndex!, 1))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await awaitParamResponse(f.bitIndex!)
     const raw = parseParamResponse(resp)
     if (raw === null) { f.status = 'fail'; return false }
     bitmaps.value[f.bitIndex!] = raw
@@ -1188,8 +1220,9 @@ async function readField(f: FieldState): Promise<boolean> {
   if (f.ascii) {
     const len = f.ascii_len ?? 8
     jbdBus.send(buildReadParam(f.index!, len))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
-    if (!resp || resp.timeout || resp.status !== 0x00) {
+    // ASCII 块要求响应 count ≥ len（起始寄存器已由 awaitParamResponse 校验）
+    const resp = await awaitParamResponse(f.index!, 1500, len)
+    if (!resp) {
       f.status = 'fail'; return false
     }
     const text = parseAsciiResponse(resp, len * 2)
@@ -1201,7 +1234,7 @@ async function readField(f: FieldState): Promise<boolean> {
   // date / serialRaw：读 raw 值，由 customDisplay 格式化
   if (canReadCustomDisplay && f.index !== undefined) {
     jbdBus.send(buildReadParam(f.index, 1))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await awaitParamResponse(f.index)
     const raw = parseParamResponse(resp)
     if (raw === null) { f.status = 'fail'; return false }
     f.value = raw
@@ -1212,7 +1245,7 @@ async function readField(f: FieldState): Promise<boolean> {
   // 复合保护字段（scd）：高字节=保护值档位、低字节=延迟档位
   if (f.kind === 'scd') {
     jbdBus.send(buildReadParam(f.index!, 1))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await awaitParamResponse(f.index!)
     const raw = parseParamResponse(resp)
     if (raw === null) {
       f.status = 'fail'; return false
@@ -1230,7 +1263,7 @@ async function readField(f: FieldState): Promise<boolean> {
   // 下拉选项字段：value 直接存原始寄存器值
   if (f.options) {
     jbdBus.send(buildReadParam(f.index!, 1))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await awaitParamResponse(f.index!)
     const raw = parseParamResponse(resp)
     if (raw === null) { f.status = 'fail'; return false }
     f.value = raw & 0xffff
@@ -1240,7 +1273,7 @@ async function readField(f: FieldState): Promise<boolean> {
   }
   // 普通数值
   jbdBus.send(buildReadParam(f.index!, 1))
-  const resp = await jbdBus.onceResponse(1500, 0xfa)
+  const resp = await awaitParamResponse(f.index!)
   const raw = parseParamResponse(resp)
   if (raw === null) { f.status = 'fail'; return false }
   f.value = paramRawToDisplay(f.index!, raw)
@@ -1345,7 +1378,9 @@ function diffMessage(f: FieldState, exp: WriteExpect, got: WriteExpect): string 
  *  - 比对期望值与读取值，不一致 → 行内标红(status='fail') + 明确错误提示；
  *  - 一致 → 保持 status='ok'，不额外打扰用户。
  * 注：readField 本身会把读取结果写回 f.value，故比对用的「回读值」取自 readField 之后的 f。 */
-async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
+async function verifyField(f: FieldState, exp: WriteExpect, epoch = busEpoch): Promise<void> {
+  // 世代已变：批量操作（读取全部/下发/本组读取）已接管总线，静默退出避免 0xFA 帧互抢
+  if (busEpoch !== epoch) return
   // scd 复合字段：整寄存器由 level part 代表写入，校验失败需把 delay part(peer) 一并标红
   const peer = f.kind === 'scd' ? scdPeer(f) : undefined
   const failBoth = (msg: string) => {
@@ -1366,8 +1401,9 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
   if (f.kind === 'scd' && f.index !== undefined) {
     // scd 回读也重试 3 次（与非 scd 一致），吸收强制下发批量帧密集导致的偶发超时
     let okRead = await readField(f)
-    if (!okRead) okRead = await readField(f)
-    if (!okRead) okRead = await readField(f)
+    if (!okRead && busEpoch === epoch) okRead = await readField(f)
+    if (!okRead && busEpoch === epoch) okRead = await readField(f)
+    if (busEpoch !== epoch) return
     if (!okRead) {
       failBoth('读取超时或无响应（设备未正确返回下发结果）')
       return
@@ -1396,8 +1432,9 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
   // 校验失败时只标红、并恢复 f.value 为用户原下发内容，避免界面显示为空。
   const savedValue = f.value
   let okRead = await readField(f)
-  if (!okRead) okRead = await readField(f)
-  if (!okRead) okRead = await readField(f)
+  if (!okRead && busEpoch === epoch) okRead = await readField(f)
+  if (!okRead && busEpoch === epoch) okRead = await readField(f)
+  if (busEpoch !== epoch) return
   if (!okRead) {
     f.value = savedValue
     failBoth('读取超时或无响应（设备未正确返回下发结果）')
@@ -1413,31 +1450,12 @@ async function verifyField(f: FieldState, exp: WriteExpect): Promise<void> {
   }
 }
 
-/** scd 整寄存器读取（带重试，返回 16 位 raw；超时/无响应返回 null）
- *
- *  重要：0xFA 寄存器（尤其是 scd 保护参数 40/41）读取前必须先发送芯片指令
- *  (buildEnterFactory / CHIP_TYPE + 密码 0x5678) 解锁设备，否则设备可能返回
- *  缓存旧值或未解锁态默认值，导致校验误报。
- *  这与「读取全部」(readAll) 先 readChip() 再读寄存器的流程一致。 */
-async function readScdRawRetry(index: number): Promise<number | null> {
-  // 确保设备处于解锁态（与 readAll → readChip 流程对齐）
-  if (autoFactory.value && !inFactory.value) {
-    await enterFactory()
-  }
-  for (let attempt = 0; attempt < 3; attempt++) {
-    jbdBus.send(buildReadParam(index, 1))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
-    const raw = parseParamResponse(resp)
-    if (raw !== null) return raw
-  }
-  return null
-}
-
 /** 下发成功后立即标记 ok，并异步触发回读校验（校验失败会翻红 field.status）。
- *  不 await 校验结果，避免阻塞 writeField 的返回；校验反馈通过行内标红 + 错误提示表达。 */
+ *  不 await 校验结果，避免阻塞 writeField 的返回；校验反馈通过行内标红 + 错误提示表达。
+ *  捕获当前总线世代：若校验期间有批量操作（读取全部/下发等）接管总线，则静默退出避免抢帧。 */
 function markWriteOkWithVerify(f: FieldState, exp: WriteExpect): true {
   markWriteOk(f)
-  void verifyField(f, exp)
+  void verifyField(f, exp, busEpoch)
   return true
 }
 
@@ -1560,6 +1578,7 @@ function planReadUnits(fields: FieldState[]): { units: FieldState[]; skip: numbe
 async function readGroup(g: { title: string; fields: FieldState[] }) {
   if (!props.connected) return
   const { units, skip } = planReadUnits(g.fields)
+  busEpoch++
   busy.value = true
   let ok = 0, fail = 0
   for (const f of units) {
@@ -1676,6 +1695,7 @@ function parseBatchResponse(resp: any, expectStart: number, expectCount: number)
 
 async function readAll() {
   if (!props.connected) return
+  busEpoch++
   busy.value = true
   progress.value = 0
   // 默认第一条指令：先读取芯片类型。芯片方案决定二级过流/短路保护下拉的档位物理量，
@@ -1731,7 +1751,7 @@ async function readAll() {
       fallbackChunks++
       for (let r = ch.start; r < ch.start + ch.count; r++) {
         jbdBus.send(buildReadParam(r, 1))
-        const rr = await jbdBus.onceResponse(READ_TIMEOUT, 0xfa)
+        const rr = await awaitParamResponse(r, READ_TIMEOUT)
         const raw = parseParamResponse(rr)
         if (raw === null) failedRegs.add(r)
         else rawMap[r] = raw
@@ -1778,6 +1798,7 @@ function markImportedDirty() {
 // 调用方决定字段集合（脏字段、或全部已读字段），本函数不判断 dirty。
 async function sendFields(fields: FieldState[]) {
   if (!fields.length) return
+  busEpoch++
   busy.value = true
   let ok = 0, fail = 0
   // 收集写入成功的字段及其期望值快照，待全部写完后统一串行回读校验。

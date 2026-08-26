@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, Menu } from 'electron'
 import { join } from 'path'
 import { SerialManager, type AutoConnectConfig } from './serial'
+import { initAutoUpdater } from './updater'
 
 let mainWindow: BrowserWindow | null = null
 const serialManager = new SerialManager()
@@ -100,6 +101,8 @@ app.whenReady().then(() => {
   // 去掉默认菜单栏（File/Edit/View 等），仅保留应用界面自身
   Menu.setApplicationMenu(null)
   createWindow()
+  // 启动自动更新（仅打包后生效；开发模式自动跳过，不阻断串口业务）
+  initAutoUpdater()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

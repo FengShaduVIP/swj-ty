@@ -1,5 +1,38 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+// === 自动更新相关类型 ===
+export type UpdaterState =
+  | 'idle' | 'checking' | 'available' | 'not-available'
+  | 'downloading' | 'downloaded' | 'error' | 'dev-disabled'
+
+export interface UpdaterStatus {
+  state: UpdaterState
+  currentVersion: string
+  latestVersion?: string
+  releaseNotes?: string
+  progress?: { percent: number; bytesPerSecond: number; transferred: number; total: number }
+  error?: string
+  checkedAt?: number
+  source?: string
+}
+
+export interface UpdaterConfig {
+  enabled: boolean
+  source: string
+  checkOnStartup: boolean
+  checkIntervalMs: number
+  autoDownload: boolean
+  currentVersion: string
+}
+
+export interface UpdaterAPI {
+  checkNow: () => Promise<{ ok: boolean; state?: string; error?: string }>
+  quitAndInstall: () => Promise<{ ok: boolean; error?: string }>
+  getConfig: () => Promise<UpdaterConfig>
+  onStatus: (callback: (status: UpdaterStatus) => void) => void
+  removeStatusListeners: () => void
+}
+
 // 暴露安全的 API 给渲染进程
 contextBridge.exposeInMainWorld('serialAPI', {
   // 获取串口列表
@@ -49,6 +82,31 @@ contextBridge.exposeInMainWorld('serialAPI', {
     ipcRenderer.removeAllListeners('serial:data')
     ipcRenderer.removeAllListeners('serial:error')
     ipcRenderer.removeAllListeners('serial:statusChange')
+  }
+})
+
+// 暴露自动更新 API 给渲染进程（安全桥接）
+contextBridge.exposeInMainWorld('updaterAPI', {
+  /** 立即检查一次更新（手动触发） */
+  checkNow: (): Promise<{ ok: boolean; state?: string; error?: string }> =>
+    ipcRenderer.invoke('updater:checkNow'),
+
+  /** 退出并应用已下载的更新（重启） */
+  quitAndInstall: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('updater:quitAndInstall'),
+
+  /** 读取更新配置（源、频率、开关等） */
+  getConfig: (): Promise<UpdaterConfig> =>
+    ipcRenderer.invoke('updater:getConfig'),
+
+  /** 订阅更新状态广播 */
+  onStatus: (callback: (status: UpdaterStatus) => void) => {
+    ipcRenderer.on('updater:status', (_event, status: UpdaterStatus) => callback(status))
+  },
+
+  /** 移除更新状态监听 */
+  removeStatusListeners: () => {
+    ipcRenderer.removeAllListeners('updater:status')
   }
 })
 

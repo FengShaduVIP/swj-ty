@@ -218,10 +218,24 @@
         <div class="about-meta num">设计系统 VG-Dark v1.0 · 版本 v{{ version }}</div>
         <div class="about-meta">视觉语言：工业深色 · 仪器面板 · 等宽数值 · 状态驱动配色</div>
       </div>
+      <el-divider />
+      <div class="set-row set-row--col">
+        <div class="set-head">
+          <div>
+            <div class="set-name">软件更新</div>
+            <div class="set-desc">检测到新版本后后台下载，重启应用即可更新。更新源：{{ updaterConfig?.source || 'GitHub Releases' }}，每 30 分钟自动检查。</div>
+          </div>
+          <el-button size="small" :loading="updating" @click="onCheckUpdate">{{ updaterBtnText }}</el-button>
+        </div>
+        <div v-if="updaterStatus" class="about-meta" :class="`up-state--${updaterState.state}`">{{ updaterStatus }}</div>
+      </div>
       <template #footer>
         <el-button @click="settingsOpen = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- ============ 自动更新提示（右下角，不打断业务）============ -->
+    <UpdateNotifier />
   </div>
 </template>
 
@@ -234,6 +248,8 @@ import JbdPanel from './components/JbdPanel.vue'
 import JbdParamConfig from './components/JbdParamConfig.vue'
 import DispatchLog from './components/DispatchLog.vue'
 import ConnIndicator from './components/ConnIndicator.vue'
+import UpdateNotifier from './components/UpdateNotifier.vue'
+import { useUpdater } from './composables/useUpdater'
 import { ui, setConnected, setConnecting, setDisconnected, markCommError } from './store'
 import { jbdBus } from './jbd/jbd-bus'
 import { describeFrame as describeJbdFrame } from './jbd/jbd-protocol'
@@ -242,6 +258,29 @@ import pkg from '../package.json'
 import { LOG_MAX_LINES } from './constants'
 
 const version = (pkg as any).version || '1.0.0'
+
+// ===== 自动更新（共享状态 + 手动检查入口）=====
+const { status: updaterState, config: updaterConfig, checkNow } = useUpdater()
+const updating = ref(false)
+const updaterBtnText = computed(() => (updating.value ? '检查中' : '检查更新'))
+const updaterStatus = computed(() => {
+  const s = updaterState.value
+  switch (s.state) {
+    case 'checking': return '正在检查更新…'
+    case 'available': return `发现新版本 v${s.latestVersion}（下载中）`
+    case 'downloading': return `正在下载 v${s.latestVersion}（${Math.floor(s.progress?.percent || 0)}%）`
+    case 'downloaded': return `新版本 v${s.latestVersion} 已下载，重启后生效`
+    case 'not-available': return `已是最新版本 v${s.currentVersion}`
+    case 'error': return `更新检查失败：${s.error || '未知错误'}`
+    case 'dev-disabled': return '开发模式：不检查更新'
+    default: return ''
+  }
+})
+async function onCheckUpdate() {
+  updating.value = true
+  try { await checkNow() }
+  finally { setTimeout(() => { updating.value = false }, 600) }
+}
 
 // ===== 导航视图定义（按协议动态切换）=====
 interface ViewDef {
@@ -705,4 +744,12 @@ onUnmounted(() => {
 }
 .set-field { display: flex; flex-direction: column; gap: var(--space-2); }
 .set-field label { font-size: var(--fs-caption); color: var(--text-secondary); font-weight: var(--fw-medium); }
+
+/* 设置页更新状态着色 */
+.up-state--downloaded { color: var(--ok-bright); }
+.up-state--error { color: var(--critical); }
+.up-state--downloading,
+.up-state--available { color: var(--info); }
+.up-state--not-available,
+.up-state--dev-disabled { color: var(--text-tertiary); }
 </style>
