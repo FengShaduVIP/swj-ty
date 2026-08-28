@@ -230,14 +230,15 @@
                   :disabled="f.status === 'reading' || !connected"
                   @change="onBitChange(f); f.dirty = true"
                 />
-                <!-- 生产日期：日期选择器，可编辑下发（raw = 日|月<<5|(年-2000)<<9） -->
+                <!-- 生产日期：手动输入 8 位日期 YYYYMMDD（如 20260828）→ 寄存器 raw（日|月<<5|(年-2000)<<9），不弹窗 -->
                 <template v-else-if="f.customDisplay === 'date'">
-                  <el-date-picker
-                    :model-value="dateFromRaw(f.value)"
-                    type="date"
+                  <el-input
+                    :model-value="dateInputText(f)"
+                    type="text"
                     size="small"
                     style="flex: 1"
-                    placeholder="选择日期"
+                    maxlength="8"
+                    placeholder="如 20260828"
                     :disabled="!connected || busy || f.status === 'reading'"
                     @update:model-value="(v: any) => onDateInput(f, v)"
                   />
@@ -577,15 +578,6 @@ function customDisplayValue(f: FieldState): string {
 }
 
 /** 生产日期 raw ↔ Date：raw = 日(bit0~4) | 月<<5(bit5~8) | (年-2000)<<9(bit9~15) */
-function dateFromRaw(raw: number | null): Date | null {
-  if (raw === null || raw === undefined || raw === 0) return null
-  const day = raw & 0x1f
-  const month = (raw >> 5) & 0x0f
-  const year = 2000 + ((raw >> 9) & 0x7f)
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null
-  return new Date(year, month - 1, day)
-}
-
 function dateToRaw(d: Date): number {
   const day = d.getDate() & 0x1f
   const month = (d.getMonth() + 1) & 0x0f
@@ -752,10 +744,39 @@ function onAsciiInput(f: FieldState, v: any) {
   f.dirty = true
 }
 
-/** 生产日期选择：Date → raw 存值并标脏 */
-function onDateInput(f: FieldState, v: Date | null) {
-  f.value = v ? dateToRaw(v) : null
-  f.dirty = true
+/** 生产日期本地输入缓冲（key=字段 key）：保留用户输入原文，避免受控输入框在解析回显时清空正在输入的内容 */
+const dateText = reactive<Record<string, string>>({})
+
+/** raw → 8 位日期串 YYYYMMDD（用于读取后回填输入框） */
+function rawToDateStr(raw: number): string {
+  const day = raw & 0x1f
+  const month = (raw >> 5) & 0x0f
+  const year = 2000 + ((raw >> 9) & 0x7f)
+  return `${year}${String(month).padStart(2, '0')}${String(day).padStart(2, '0')}`
+}
+
+/** 输入框显示文本：优先用用户正在输入的原文，否则由已读取的 raw 推导 */
+function dateInputText(f: FieldState): string {
+  if (f.key && dateText[f.key] !== undefined) return dateText[f.key]
+  return f.value != null && f.value !== 0 ? rawToDateStr(f.value as number) : ''
+}
+
+/** 生产日期输入：8 位串 YYYYMMDD（兼容含分隔符写法，自动剔除非数字）→ Date → raw 存值并标脏。
+ *  非法（非 8 位 / 月日越界 / 年份超出 2000~2127）→ 置空，禁止下发。 */
+function onDateInput(f: FieldState, v: any) {
+  const digits = typeof v === 'string' ? v.replace(/\D/g, '').slice(0, 8) : ''
+  if (f.key) dateText[f.key] = digits
+  if (digits.length === 8) {
+    const y = Number(digits.slice(0, 4))
+    const m = Number(digits.slice(4, 6))
+    const d = Number(digits.slice(6, 8))
+    if (y >= 2000 && y <= 2127 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      f.value = dateToRaw(new Date(y, m - 1, d))
+      f.dirty = true
+      return
+    }
+  }
+  f.value = null
 }
 
 /** ASCII 字段编码：字符串 → (ascii_len 个寄存器 = ascii_len*2 字节)
@@ -1130,25 +1151,37 @@ async function confirmResetMcu() {
 }
 
 // ====== 工厂模式 ======
+// 进入/退出改用 sendAck（请求-应答配对）：sendAck 的超时计时从帧真正出队上线那一刻起算
+// （见 jbd-bus.ts pump），而非旧「send + onceResponse」在调用瞬间就启动 1500ms 预算。
+// 旧写法下若实时轮询帧恰在途（共享总线单帧在途锁 busy=true），进入工厂的帧需在队列里等轮询
+// 完成才上线，排队+往返一旦 > 1500ms 即超时 → 首次点击下发失败（设备实则已进入工厂态）。
+// 叠加至多 FACTORY_RETRY 次重试，彻底消除该竞态导致的偶发首次失败（影响所有 0xFA 工厂模式写入）。
+const FACTORY_RETRY = 2
+
 async function enterFactory(): Promise<boolean> {
-  jbdBus.send(buildEnterFactory())
-  const r = await jbdBus.onceResponse(1500, 0x00)
-  if (r.timeout || r.status !== 0x00) {
-    ElMessage.error('进入工厂模式失败: ' + (r.timeout ? '超时' : `0x${r.status.toString(16)}`))
-    return false
+  let last: any = null
+  for (let i = 0; i <= FACTORY_RETRY; i++) {
+    last = await jbdBus.sendAck(buildEnterFactory())
+    if (!last.timeout && last.status === 0x00) {
+      inFactory.value = true
+      return true
+    }
   }
-  inFactory.value = true
-  return true
+  ElMessage.error('进入工厂模式失败: ' + (last?.timeout ? '超时' : `0x${(last?.status ?? 0).toString(16)}`))
+  return false
 }
+
 async function exitFactory(): Promise<boolean> {
-  jbdBus.send(buildExitFactory())
-  const r = await jbdBus.onceResponse(1500, 0x01)
-  if (r.timeout || r.status !== 0x00) {
-    ElMessage.error('退出工厂模式失败: ' + (r.timeout ? '超时' : `0x${r.status.toString(16)}`))
-    return false
+  let last: any = null
+  for (let i = 0; i <= FACTORY_RETRY; i++) {
+    last = await jbdBus.sendAck(buildExitFactory())
+    if (!last.timeout && last.status === 0x00) {
+      inFactory.value = false
+      return true
+    }
   }
-  inFactory.value = false
-  return true
+  ElMessage.error('退出工厂模式失败: ' + (last?.timeout ? '超时' : `0x${(last?.status ?? 0).toString(16)}`))
+  return false
 }
 
 function parseParamResponse(resp: any): number | null {
@@ -1238,6 +1271,7 @@ async function readField(f: FieldState): Promise<boolean> {
     const raw = parseParamResponse(resp)
     if (raw === null) { f.status = 'fail'; return false }
     f.value = raw
+    if (f.key) delete dateText[f.key]
     f.dirty = false
     f.status = 'ok'
     return true
@@ -1479,9 +1513,8 @@ async function writeField(f: FieldState): Promise<boolean> {
   // ASCII 字段：多寄存器写（ascii_len 个寄存器 → ascii_len*2 字节）
   if (f.ascii) {
     // 蓝牙名称：走专用修改指令 DD 5A A2 <len> <name...> <chk> 77（载荷 [长度][名称]，无填充，长度字段=名称长度+1）
-    if (f.key === 'bt-name') {
-      jbdBus.send(buildSetBtName(String(f.value ?? '')))
-      const resp = await jbdBus.onceResponse(1500, 0xa2)
+        if (f.key === 'bt-name') {
+          const resp = await jbdBus.sendAck(buildSetBtName(String(f.value ?? '')))
       if (autoFactory.value) await exitFactory()
       if (!resp || resp.timeout || resp.status !== 0x00) {
         f.status = 'fail'
@@ -1491,8 +1524,7 @@ async function writeField(f: FieldState): Promise<boolean> {
       return markWriteOkWithVerify(f, exp)
     }
     const bytes = encodeAsciiValue(f)
-    jbdBus.send(buildWriteParam(f.index!, bytes))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await jbdBus.sendAck(buildWriteParam(f.index!, bytes))
     if (autoFactory.value) await exitFactory()
     if (!resp || resp.timeout || resp.status !== 0x00) {
       f.status = 'fail'
@@ -1509,8 +1541,7 @@ async function writeField(f: FieldState): Promise<boolean> {
     const level = f.scdPart === 'level' ? selfVal : peerVal
     const delay = f.scdPart === 'delay' ? selfVal : peerVal
     const raw = combineScd(level, delay) & 0xffff
-    jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await jbdBus.sendAck(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
     if (autoFactory.value) await exitFactory()
     if (!resp || resp.timeout || resp.status !== 0x00) {
       f.status = 'fail'
@@ -1523,8 +1554,7 @@ async function writeField(f: FieldState): Promise<boolean> {
   // 下拉选项字段：value 即原始寄存器值，直接下发
   if (f.options) {
     const raw = Number(f.value ?? 0) & 0xffff
-    jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await jbdBus.sendAck(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
     if (autoFactory.value) await exitFactory()
     if (!resp || resp.timeout || resp.status !== 0x00) {
       f.status = 'fail'
@@ -1544,8 +1574,7 @@ async function writeField(f: FieldState): Promise<boolean> {
     }
   }
   const raw = paramDisplayToRaw(f.index!, f.value)
-  jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
-  const resp = await jbdBus.onceResponse(1500, 0xfa)
+  const resp = await jbdBus.sendAck(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
   if (autoFactory.value) await exitFactory()
   if (!resp || resp.timeout || resp.status !== 0x00) {
     f.status = 'fail'
@@ -1824,8 +1853,7 @@ async function sendFields(fields: FieldState[]) {
       const selfVal = f.value != null ? Number(f.value) : 0
       const raw = combineScd(selfVal, peerVal) & 0xffff
       f.status = 'writing'
-      jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
-      const resp = await jbdBus.onceResponse(1500, 0xfa)
+      const resp = await jbdBus.sendAck(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
       if (!resp || resp.timeout || resp.status !== 0x00) {
         f.status = 'fail'; fail++
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
@@ -1840,8 +1868,7 @@ async function sendFields(fields: FieldState[]) {
     // ASCII 字段：多寄存器写（蓝牙名称走专用 0xA2 指令）
     if (f.ascii) {
       if (f.key === 'bt-name') {
-        jbdBus.send(buildSetBtName(String(f.value ?? '')))
-        const resp = await jbdBus.onceResponse(1500, 0xa2)
+        const resp = await jbdBus.sendAck(buildSetBtName(String(f.value ?? '')))
         if (!resp || resp.timeout || resp.status !== 0x00) {
           f.status = 'fail'; fail++
           ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
@@ -1852,8 +1879,7 @@ async function sendFields(fields: FieldState[]) {
         continue
       }
       const bytes = encodeAsciiValue(f)
-      jbdBus.send(buildWriteParam(f.index!, bytes))
-      const resp = await jbdBus.onceResponse(1500, 0xfa)
+      const resp = await jbdBus.sendAck(buildWriteParam(f.index!, bytes))
       if (!resp || resp.timeout || resp.status !== 0x00) {
         f.status = 'fail'; fail++
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
@@ -1866,8 +1892,7 @@ async function sendFields(fields: FieldState[]) {
     // 下拉选项字段：value 即原始寄存器值
     if (f.options) {
       const raw = Number(f.value ?? 0) & 0xffff
-      jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
-      const resp = await jbdBus.onceResponse(1500, 0xfa)
+      const resp = await jbdBus.sendAck(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
       if (!resp || resp.timeout || resp.status !== 0x00) {
         f.status = 'fail'; fail++
         ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
@@ -1888,8 +1913,7 @@ async function sendFields(fields: FieldState[]) {
       }
     }
     const raw = paramDisplayToRaw(f.index!, f.value!)
-    jbdBus.send(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await jbdBus.sendAck(buildWriteParam(f.index!, [(raw >> 8) & 0xff, raw & 0xff]))
     if (!resp || resp.timeout || resp.status !== 0x00) {
       f.status = 'fail'; fail++
       ElMessage.error(`写参数[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
@@ -2007,8 +2031,7 @@ async function writeGroupBitmap(g: { title: string; fields: FieldState[] }, bitI
   for (const f of dirty) {
     f.status = 'writing'
     const raw = bitmaps.value[bitIndex] ?? 0
-    jbdBus.send(buildWriteParam(bitIndex, [(raw >> 8) & 0xff, raw & 0xff]))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await jbdBus.sendAck(buildWriteParam(bitIndex, [(raw >> 8) & 0xff, raw & 0xff]))
     if (!resp || resp.timeout || resp.status !== 0x00) {
       f.status = 'fail'; fail++
       ElMessage.error(`写位图[${f.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status?.toString(16)}`}`)
@@ -2129,8 +2152,7 @@ async function sendAllImported() {
     const p = list[i]
     if (sent.has(p.index)) { ok++; p.status = 'ok'; continue } // SCD 延时行：跳过写入，标记成功
     sent.add(p.index)
-    jbdBus.send(buildWriteParam(p.index, [(p.raw >> 8) & 0xff, p.raw & 0xff]))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await jbdBus.sendAck(buildWriteParam(p.index, [(p.raw >> 8) & 0xff, p.raw & 0xff]))
     if (!resp || resp.timeout || resp.status !== 0x00) { fail++; p.status = 'fail'; ElMessage.error(`写参数[${p.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`) }
     else {
       ok++
