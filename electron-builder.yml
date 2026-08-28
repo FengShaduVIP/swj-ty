@@ -21,6 +21,13 @@ directories:
   output: release
   buildResources: public
 
+# 只保留中文(zh-CN)语言包：Electron 默认会把全部 locales/*.pak 打进安装包
+# （约 30+ 语言、数 MB）。BMS 上位机纯中文场景，无需其他语言，限定后
+# 安装包体积更小，且原生菜单/对话框在中文系统下仍显示中文。
+# 注意：缺省语言(英文)字符串内置于 Electron，非中文系统会回退英文，不影响功能。
+electronLanguages:
+  - zh-CN
+
 files:
   - dist
   - dist-electron
