@@ -52,7 +52,7 @@
           <span class="c-label">{{ p.label }}</span>
           <span class="c-value" :class="{ 'value-diff': isSendDiff(p) }">{{ p.value }} {{ p.unit }}</span>
           <span class="c-current">{{ currentParamValue(p) }}</span>
-          <span class="c-raw">0x{{ p.raw.toString(16).padStart(4, '0').toUpperCase() }}</span>
+          <span class="c-raw">{{ p.ascii !== undefined ? '—' : `0x${p.raw.toString(16).padStart(4, '0').toUpperCase()}` }}</span>
           <span class="c-status">
             <span v-if="p.status === 'ok'" class="dot ok" />
             <span v-else-if="p.status === 'fail'" class="dot fail" />
@@ -408,8 +408,9 @@ function tagLabel(type: string): string {
 
 type ImportStatus = 'ok' | 'fail' | undefined
 interface ImportedParam {
-  index: number; label: string; unit: string; value: number; raw: number; status?: ImportStatus
-  current?: number | null  // 导入前设备上真实的当前值，用于与下发值比对
+  index: number; label: string; unit: string; value: number | string; raw: number; status?: ImportStatus
+  current?: number | string | null  // 导入前设备上真实的当前值，用于与下发值比对
+  ascii?: string  // ASCII 块参数（如生产厂商信息）：以字符串形式下发，raw 列不适用
 }
 const importedParams = ref<ImportedParam[]>([])
 const importDialogVisible = ref(false)
@@ -2071,6 +2072,17 @@ function applyImport(data: any) {
   const appliedFields = new Set<FieldState>() // 防止 SCD 同寄存器重复回填
   for (const item of rawList) {
     const index = Number(item?.index ?? item?.reg)
+    // ASCII 块参数（如生产厂商信息）：以字符串回填并进入预览，不按 raw 数值解析
+    if (typeof item?.ascii === 'string') {
+      if (!Number.isInteger(index) || index < 0 || index > 65535) continue
+      const def = fieldByIndex(index)
+      if (!def?.ascii) continue
+      const text = String(item.ascii)
+      const current = typeof def.value === 'string' ? def.value : null
+      out.push({ index, label: item?.label || def.label, unit: '', value: text, raw: 0, ascii: text, current })
+      def.value = text; def.dirty = true; def.status = 'idle'
+      continue
+    }
     const raw = Number(item?.raw ?? item?.value)
     if (!Number.isInteger(index) || index < 0 || index > 65535) continue
     if (!Number.isFinite(raw)) continue
@@ -2122,6 +2134,8 @@ function currentParamValue(p: ImportedParam): string {
 function isSendDiff(p: ImportedParam): boolean {
   const c = p.current
   if (c === null || c === undefined) return false
+  // ASCII 参数按字符串比较；数值参数按数值比较
+  if (p.ascii !== undefined || typeof c === 'string') return String(c).trim() !== String(p.value).trim()
   return Number(c) !== p.value
 }
 
@@ -2152,6 +2166,21 @@ async function sendAllImported() {
     const p = list[i]
     if (sent.has(p.index)) { ok++; p.status = 'ok'; continue } // SCD 延时行：跳过写入，标记成功
     sent.add(p.index)
+    // ASCII 块参数（生产厂商信息）：多寄存器块写（ascii_len*2 字节，首字节为字符串长度）
+    if (p.ascii !== undefined) {
+      const af = allFields.value.find((x) => x.index === p.index && x.ascii)
+      if (!af) { fail++; p.status = 'fail'; continue }
+      const bytes = encodeAsciiValue(af)
+      const resp = await jbdBus.sendAck(buildWriteParam(p.index, bytes))
+      if (!resp || resp.timeout || resp.status !== 0x00) {
+        fail++; p.status = 'fail'
+        ElMessage.error(`写参数[${p.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`)
+      } else {
+        ok++; p.status = 'ok'
+        af.status = 'ok'; af.dirty = false
+      }
+      continue
+    }
     const resp = await jbdBus.sendAck(buildWriteParam(p.index, [(p.raw >> 8) & 0xff, p.raw & 0xff]))
     if (!resp || resp.timeout || resp.status !== 0x00) { fail++; p.status = 'fail'; ElMessage.error(`写参数[${p.label}]失败: ${resp?.timeout ? '超时' : `0x${resp?.status.toString(16)}`}`) }
     else {
@@ -2177,7 +2206,16 @@ function buildExportData() {
   const params: any[] = []
   const emitted = new Set<number>() // SCD 寄存器只导出一次（level 部分携带组合 raw）
   for (const f of allFields.value) {
-    if (f.value === null || f.index === undefined || f.customDisplay || f.readOnly || f.ascii || f.bitIndex !== undefined) continue
+    if (f.value === null || f.index === undefined || f.customDisplay || f.readOnly || f.bitIndex !== undefined) continue
+    // ASCII 块字段：仅生产厂商信息进模板（蓝牙名称走专用指令、其余只读）
+    // 值为空串时跳过，避免导入时把设备上的厂商信息清空
+    if (f.ascii) {
+      if (f.key !== 'mfr') continue
+      const text = String(f.value ?? '').trim()
+      if (!text) continue
+      params.push({ index: f.index, label: f.label, unit: '', value: text, ascii: text })
+      continue
+    }
     // SCD 拆分字段：delay 部分跳过（与 level 共享同一寄存器，由 level 条目统一导出）
     if (f.kind === 'scd' && f.scdPart === 'delay') continue
     let raw: number

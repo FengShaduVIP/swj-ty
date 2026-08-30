@@ -37,6 +37,11 @@ export default defineConfig({
     ]),
     renderer()
   ],
+  // 默认端口 5173 落在本机 Windows 保留端口段（5147~5246，Hyper-V/WinNAT 动态保留），
+  // 启动报 listen EACCES ::1:5173，故改用保留段之外的 5347。
+  server: {
+    port: 5347
+  },
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src')
