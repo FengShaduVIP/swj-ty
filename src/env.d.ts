@@ -92,7 +92,12 @@ interface UpdaterAPI {
   removeStatusListeners: () => void
 }
 
+interface ShellAPI {
+  openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>
+}
+
 interface Window {
   serialAPI: SerialAPI
   updaterAPI: UpdaterAPI
+  shellAPI: ShellAPI
 }

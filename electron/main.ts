@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
 import { join } from 'path'
 import { SerialManager, type AutoConnectConfig } from './serial'
 import { initAutoUpdater } from './updater'
@@ -93,6 +93,16 @@ serialManager.onStatusChange((status: { connected: boolean; portPath?: string })
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('serial:statusChange', status)
   }
+})
+
+// 9. 在系统默认浏览器中打开外部链接（如 Gitee 手动下载页）
+//    仅放行 http/https，避免渲染层传入任意协议造成安全风险
+ipcMain.handle('app:openExternal', async (_event, url: string) => {
+  if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+    await shell.openExternal(url)
+    return { ok: true as const }
+  }
+  return { ok: false as const, error: '仅支持 http/https 链接' }
 })
 
 // ======== App 生命周期 ========

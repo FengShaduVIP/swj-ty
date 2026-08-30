@@ -1,0 +1,100 @@
+name: Sync Release to Gitee
+
+# 推 tag 触发 GitHub 打包并发布 Release 后，自动把产物同步到 Gitee 发行版（国内镜像）。
+# 解耦自 build-windows.yml，不影响 Windows 打包流程。
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  GITEE_OWNER: tianip
+  GITEE_REPO: swj-ty
+
+jobs:
+  sync-gitee:
+    name: Sync assets to Gitee Releases
+    runs-on: ubuntu-latest
+    # 预发布版本不同步到 Gitee
+    if: github.event.release.prerelease == false
+    steps:
+      - name: Download GitHub Release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir -p assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets --skip-existing
+          echo "Downloaded assets:"
+          ls -la assets
+
+      - name: Upload to Gitee Releases
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+        run: |
+          set -euo pipefail
+          API="https://gitee.com/api/v5/repos/${GITEE_OWNER}/${GITEE_REPO}"
+          TOKEN="$GITEE_TOKEN"
+
+          # 1) 确保 Gitee 上存在该 tag（Gitee 从 GitHub 自动镜像，可能滞后）
+          if curl -s -o /dev/null -w "%{http_code}" "$API/git/refs/tags/$TAG?access_token=$TOKEN" | grep -q 200; then
+            echo "Gitee tag $TAG 已存在"
+          else
+            echo "Gitee tag $TAG 未就绪，轮询等待（最多 5 分钟）..."
+            ready=0
+            for i in $(seq 1 20); do
+              if curl -s -o /dev/null -w "%{http_code}" "$API/git/refs/tags/$TAG?access_token=$TOKEN" | grep -q 200; then
+                ready=1; echo "tag 已就绪"; break
+              fi
+              sleep 15
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "等待超时，尝试用 Gitee main HEAD 创建轻量 tag"
+              sha=$(curl -s "$API/git/refs/heads/main?access_token=$TOKEN" | jq -r '.object.sha')
+              curl -s -X POST "$API/git/refs?access_token=$TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"ref\":\"refs/tags/$TAG\",\"sha\":\"$sha\"}" >/dev/null
+            fi
+          fi
+
+          # 2) 查找该 tag 是否已有 release
+          release_id=$(curl -s "$API/releases?access_token=$TOKEN&per_page=100&page=1" \
+            | jq -r --arg t "$TAG" '.[] | select(.tag_name==$t) | .id' | head -1)
+
+          if [ -z "$release_id" ] || [ "$release_id" = "null" ]; then
+            echo "创建 Gitee Release: $TAG"
+            release_id=$(curl -s -X POST "$API/releases?access_token=$TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"$RELEASE_NAME\",\"body\":\"自动同步自 GitHub Releases（国内镜像）。\",\"prerelease\":false,\"target_commitish\":\"main\"}" \
+              | jq -r '.id')
+          fi
+          echo "Gitee release id: $release_id"
+
+          # 3) 已存在的附件名，避免重复上传
+          existing=$(curl -s "$API/releases/$release_id/attach_files?access_token=$TOKEN&per_page=100" \
+            | jq -r '.[].name' | sort -u)
+
+          for f in assets/*; do
+            [ -e "$f" ] || continue
+            name=$(basename "$f")
+            if echo "$existing" | grep -qx "$name"; then
+              echo "跳过已存在: $name"
+              continue
+            fi
+            echo "上传: $name ($(du -h "$f" | cut -f1))"
+            for attempt in 1 2 3; do
+              code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                "$API/releases/$release_id/attach_files?access_token=$TOKEN" \
+                -F "file=@$f" --max-time 600)
+              if [ "$code" = "200" ] || [ "$code" = "201" ]; then
+                echo "  成功 ($code)"; break
+              fi
+              echo "  失败 ($code)，重试 $attempt/3"; sleep 10
+            done
+          done
+
+          echo "Gitee 发行版地址: https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}/releases/$TAG"

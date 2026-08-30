@@ -110,6 +110,13 @@ contextBridge.exposeInMainWorld('updaterAPI', {
   }
 })
 
+// 暴露「在系统默认浏览器打开外部链接」能力（避免外部网页被载入应用内）
+contextBridge.exposeInMainWorld('shellAPI', {
+  /** 用系统默认浏览器打开外部链接，url 须为 http/https */
+  openExternal: (url: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('app:openExternal', url)
+})
+
 // === 类型定义 ===
 
 export interface SerialPortInfo {

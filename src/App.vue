@@ -227,6 +227,10 @@
           <div>
             <div class="set-name">软件更新</div>
             <div class="set-desc">检测到新版本后后台下载，重启应用即可更新。更新源：{{ updaterConfig?.source || 'GitHub Releases' }}，每 30 分钟自动检查。</div>
+            <div class="set-desc set-desc--mirror">
+              国内镜像（安装包自动同步自 GitHub）：
+              <span class="link" @click="openGitee">Gitee 手动下载</span>
+            </div>
           </div>
           <el-button size="small" :loading="updating" @click="onCheckUpdate">{{ updaterBtnText }}</el-button>
         </div>
@@ -283,6 +287,11 @@ async function onCheckUpdate() {
   updating.value = true
   try { await checkNow() }
   finally { setTimeout(() => { updating.value = false }, 600) }
+}
+
+// 在系统默认浏览器打开 Gitee 发行版（国内镜像手动下载入口）
+function openGitee() {
+  window.shellAPI?.openExternal('https://gitee.com/tianip/swj-ty/releases')
 }
 
 // ===== 导航视图定义（按协议动态切换）=====
@@ -743,6 +752,13 @@ onUnmounted(() => {
 .set-row--col { flex-direction: column; align-items: stretch; gap: var(--space-4); }
 .set-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
 .set-head .set-desc { max-width: 420px; }
+.set-desc--mirror { margin-top: var(--space-2); color: var(--text-tertiary); }
+.link {
+  color: var(--info);
+  cursor: pointer;
+  text-decoration: none;
+}
+.link:hover { text-decoration: underline; }
 .set-grid {
   display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-4);
   padding: var(--space-4); background: var(--bg-canvas);
