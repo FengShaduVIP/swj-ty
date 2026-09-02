@@ -230,15 +230,18 @@
                   :disabled="f.status === 'reading' || !connected"
                   @change="onBitChange(f); f.dirty = true"
                 />
-                <!-- 生产日期：手动输入 8 位日期 YYYYMMDD（如 20260828）→ 寄存器 raw（日|月<<5|(年-2000)<<9），不弹窗 -->
+                <!-- 生产日期：弹窗选择日期 YYYY-MM-DD → 寄存器 raw（日|月<<5|(年-2000)<<9） -->
                 <template v-else-if="f.customDisplay === 'date'">
-                  <el-input
+                  <el-date-picker
                     :model-value="dateInputText(f)"
-                    type="text"
+                    type="date"
                     size="small"
                     style="flex: 1"
-                    maxlength="8"
-                    placeholder="如 20260828"
+                    format="YYYY-MM-DD"
+                    value-format="YYYY-MM-DD"
+                    placeholder="选择日期"
+                    :clearable="false"
+                    :disabled-date="disableOutOfRangeDate"
                     :disabled="!connected || busy || f.status === 'reading'"
                     @update:model-value="(v: any) => onDateInput(f, v)"
                   />
@@ -745,39 +748,36 @@ function onAsciiInput(f: FieldState, v: any) {
   f.dirty = true
 }
 
-/** 生产日期本地输入缓冲（key=字段 key）：保留用户输入原文，避免受控输入框在解析回显时清空正在输入的内容 */
-const dateText = reactive<Record<string, string>>({})
-
-/** raw → 8 位日期串 YYYYMMDD（用于读取后回填输入框） */
+/** raw → 日期串 YYYY-MM-DD（与 el-date-picker 的 value-format 对齐） */
 function rawToDateStr(raw: number): string {
   const day = raw & 0x1f
   const month = (raw >> 5) & 0x0f
   const year = 2000 + ((raw >> 9) & 0x7f)
-  return `${year}${String(month).padStart(2, '0')}${String(day).padStart(2, '0')}`
+  if (!day || !month || year < 2000) return ''
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-/** 输入框显示文本：优先用用户正在输入的原文，否则由已读取的 raw 推导 */
+/** 日期选择器显示值：由已读取的 raw 推导 */
 function dateInputText(f: FieldState): string {
-  if (f.key && dateText[f.key] !== undefined) return dateText[f.key]
   return f.value != null && f.value !== 0 ? rawToDateStr(f.value as number) : ''
 }
 
-/** 生产日期输入：8 位串 YYYYMMDD（兼容含分隔符写法，自动剔除非数字）→ Date → raw 存值并标脏。
- *  非法（非 8 位 / 月日越界 / 年份超出 2000~2127）→ 置空，禁止下发。 */
+/** 生产日期选择：YYYY-MM-DD → Date → raw 存值并标脏。越界 → 置空，禁止下发。 */
 function onDateInput(f: FieldState, v: any) {
-  const digits = typeof v === 'string' ? v.replace(/\D/g, '').slice(0, 8) : ''
-  if (f.key) dateText[f.key] = digits
-  if (digits.length === 8) {
-    const y = Number(digits.slice(0, 4))
-    const m = Number(digits.slice(4, 6))
-    const d = Number(digits.slice(6, 8))
-    if (y >= 2000 && y <= 2127 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
-      f.value = dateToRaw(new Date(y, m - 1, d))
-      f.dirty = true
-      return
-    }
+  const text = typeof v === 'string' ? v : ''
+  if (!text) { f.value = null; f.dirty = true; return }
+  const [y, m, d] = text.split('-').map(Number)
+  if (y >= 2000 && y <= 2127 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+    f.value = dateToRaw(new Date(y, m - 1, d))
+    f.dirty = true
+  } else {
+    f.value = null
   }
-  f.value = null
+}
+
+/** 仅允许选择 2000-01-01 ~ 2127-12-31（寄存器年份为 7 bit，对应 2000~2127） */
+function disableOutOfRangeDate(date: Date): boolean {
+  return date < new Date(2000, 0, 1) || date > new Date(2127, 11, 31)
 }
 
 /** ASCII 字段编码：字符串 → (ascii_len 个寄存器 = ascii_len*2 字节)
@@ -1272,7 +1272,6 @@ async function readField(f: FieldState): Promise<boolean> {
     const raw = parseParamResponse(resp)
     if (raw === null) { f.status = 'fail'; return false }
     f.value = raw
-    if (f.key) delete dateText[f.key]
     f.dirty = false
     f.status = 'ok'
     return true
