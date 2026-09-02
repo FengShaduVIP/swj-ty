@@ -40,6 +40,11 @@ export function useUpdater() {
     }
   }
 
+  /** 用户确认后开始下载更新（手动确认策略下的唯一下载入口） */
+  function download() {
+    return window.updaterAPI?.download()
+  }
+
   function quitAndInstall() {
     return window.updaterAPI?.quitAndInstall()
   }
@@ -49,5 +54,5 @@ export function useUpdater() {
     return Date.now() - manualCheckAt < withinMs
   }
 
-  return { status, config, checkNow, quitAndInstall, isRecentManualCheck }
+  return { status, config, checkNow, download, quitAndInstall, isRecentManualCheck }
 }

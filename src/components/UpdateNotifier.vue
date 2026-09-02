@@ -2,7 +2,7 @@
   <transition name="up-fade">
     <div v-if="visible" class="up-toast" :class="`up-toast--${kind}`" role="status" aria-live="polite">
       <div class="up-ico">
-        <el-icon v-if="kind === 'downloaded'" :size="18"><Download /></el-icon>
+        <el-icon v-if="kind === 'downloaded' || kind === 'available'" :size="18"><Download /></el-icon>
         <el-icon v-else-if="kind === 'error'" :size="18"><WarningFilled /></el-icon>
         <el-icon v-else :size="18"><CircleCheckFilled /></el-icon>
       </div>
@@ -29,6 +29,10 @@
             <el-button type="primary" size="small" @click="onRestart">立即重启更新</el-button>
             <el-button size="small" text @click="dismiss">稍后</el-button>
           </template>
+          <template v-else-if="kind === 'available'">
+            <el-button type="primary" size="small" @click="onConfirmUpdate">确认更新</el-button>
+            <el-button size="small" text @click="dismiss">稍后</el-button>
+          </template>
           <template v-else-if="kind === 'error'">
             <el-button type="primary" size="small" @click="onRetry">重试</el-button>
             <el-button size="small" text @click="dismiss">关闭</el-button>
@@ -47,15 +51,16 @@ import { ref, computed, watch } from 'vue'
 import { Download, WarningFilled, CircleCheckFilled } from '@element-plus/icons-vue'
 import { useUpdater } from '../composables/useUpdater'
 
-const { status, checkNow, quitAndInstall, isRecentManualCheck } = useUpdater()
+const { status, checkNow, download, quitAndInstall, isRecentManualCheck } = useUpdater()
 
 const dismissed = ref(false)
 const showNotes = ref(false)
 let uptodateTimer: ReturnType<typeof setTimeout> | null = null
 
-// 提示类型：downloaded / error / downloading / uptodate（已是最新）/ none（隐藏）
-const kind = computed<'downloaded' | 'error' | 'downloading' | 'uptodate' | 'none'>(() => {
+// 提示类型：available（发现新版本待确认）/ downloaded / error / downloading / uptodate / none（隐藏）
+const kind = computed<'available' | 'downloaded' | 'error' | 'downloading' | 'uptodate' | 'none'>(() => {
   switch (status.value.state) {
+    case 'available': return 'available'
     case 'downloaded': return 'downloaded'
     case 'error': return 'error'
     case 'downloading': return 'downloading'
@@ -65,13 +70,14 @@ const kind = computed<'downloaded' | 'error' | 'downloading' | 'uptodate' | 'non
 })
 
 const visible = computed(() =>
-  !dismissed.value && (kind.value === 'downloaded' || kind.value === 'error' || kind.value === 'downloading' || kind.value === 'uptodate')
+  !dismissed.value && (kind.value === 'available' || kind.value === 'downloaded' || kind.value === 'error' || kind.value === 'downloading' || kind.value === 'uptodate')
 )
 
 const title = computed(() => {
   const s = status.value
   switch (kind.value) {
-    case 'downloaded': return `发现新版本 v${s.latestVersion}`
+    case 'available': return `发现新版本 v${s.latestVersion}`
+    case 'downloaded': return `最新版本 v${s.latestVersion} 已下载`
     case 'error': return '更新检查失败'
     case 'downloading': return `正在下载更新${s.latestVersion ? ' v' + s.latestVersion : ''}`
     case 'uptodate': return `已是最新版本 v${s.currentVersion}`
@@ -82,6 +88,7 @@ const title = computed(() => {
 const subtitle = computed(() => {
   const s = status.value
   switch (kind.value) {
+    case 'available': return `当前 v${s.currentVersion} → v${s.latestVersion}，需你确认后才会下载`
     case 'downloaded': return `当前 v${s.currentVersion} → v${s.latestVersion}，重启后生效`
     case 'error': return s.error || '请检查网络连接后重试'
     case 'downloading': return '下载完成后将提示重启，无需中断当前监测'
@@ -98,6 +105,11 @@ function onRestart() {
   quitAndInstall()
 }
 
+/** 用户点「确认更新」后才开始下载——手动确认策略下不做后台自动下载 */
+function onConfirmUpdate() {
+  download()
+}
+
 async function onRetry() {
   dismissed.value = false
   await checkNow()
@@ -107,7 +119,7 @@ async function onRetry() {
 // 仅「已是最新」自动 3.5s 隐藏
 watch(() => status.value.state, (s) => {
   if (uptodateTimer) { clearTimeout(uptodateTimer); uptodateTimer = null }
-  if (s === 'downloaded' || s === 'error') {
+  if (s === 'available' || s === 'downloaded' || s === 'error') {
     dismissed.value = false
     showNotes.value = false
   } else if (s === 'not-available' && isRecentManualCheck()) {
@@ -145,6 +157,7 @@ watch(() => status.value.state, (s) => {
 }
 .up-toast--downloaded .up-ico { color: var(--ok-bright); background: var(--ok-bg); }
 .up-toast--error .up-ico { color: var(--critical); background: var(--critical-bg); }
+.up-toast--available .up-ico,
 .up-toast--downloading .up-ico,
 .up-toast--uptodate .up-ico { color: var(--info); background: var(--info-bg); }
 

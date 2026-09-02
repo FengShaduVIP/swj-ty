@@ -6,10 +6,10 @@
  * 更新源     ：GitHub Releases —— github.com/FengShaduVIP/swj-ty
  *              （与现有 CI 流程一致：打 tag 触发软硬发布，electron-builder
  *               会自动产出 latest.yml / *.blockmap，electron-updater 据此比对）
- * 触发方式   ：① 应用启动后延迟 5s 检查一次  ② 之后每 30 分钟后台轮询
- * 检查频率   ：startupDelayMs = 5_000 / checkIntervalMs = 30 * 60_000
- * 更新策略   ：发现新版本 → 后台静默下载（不打断串口监测业务）
- *              → 下载完成弹「重启更新」提示，由用户决定何时重启
+ * 触发方式   ：仅用户点击「检查更新」时手动检查，不做启动检查与后台轮询
+ * 检查频率   ：checkOnStartup = false / checkIntervalMs = 0（不轮询）
+ * 更新策略   ：手动检查 → 发现新版本弹「确认更新 / 稍后」→ 用户确认后才下载
+ *              → 下载完成弹「立即重启更新」，由用户决定何时重启（退出不自动安装）
  * 安全/回滚  ：下载写入临时目录，运行中的安装包完全不被触碰；
  *              仅 quitAndInstall() 才替换。下载/网络失败则原版本完好，
  *              前端展示错误并提供「重试」。NSIS 安装失败亦保留旧版本。
@@ -33,16 +33,16 @@ export const UPDATER_CONFIG = {
    *   GH_UPDATE_TOKEN=ghp_xxx pnpm electron:build:win
    */
   token: process.env.GH_UPDATE_TOKEN || '',
-  /** 启动后是否立即检查一次 */
-  checkOnStartup: true,
+  /** 启动后是否立即检查一次（手动确认策略：不做启动自动检查） */
+  checkOnStartup: false,
   /** 启动检查延迟（ms）—— 让位给启动关键资源，避免抢占 */
   startupDelayMs: 5_000,
   /** 轮询间隔（ms）—— 0 表示不轮询，仅手动检查 */
-  checkIntervalMs: 30 * 60 * 1_000,
-  /** 发现新版本是否后台自动下载 */
-  autoDownload: true,
-  /** 应用退出时是否自动应用已下载的更新（用户正常关闭也会更新） */
-  autoInstallOnAppQuit: true,
+  checkIntervalMs: 0,
+  /** 发现新版本是否后台自动下载（手动确认策略：由用户点「确认更新」触发 downloadUpdate） */
+  autoDownload: false,
+  /** 应用退出时是否自动应用已下载的更新（手动确认策略：仅用户点「立即重启更新」才安装） */
+  autoInstallOnAppQuit: false,
 }
 
 // ======== 状态类型（与主进程/渲染层共享语义）========
@@ -250,6 +250,16 @@ export function initAutoUpdater(): void {
     try {
       // 应用已下载的更新并重启；isForceRunAfter=true 确保更新后自动重新打开
       autoUpdater.quitAndInstall(false, true)
+      return { ok: true }
+    } catch (e: any) {
+      return { ok: false, error: e?.message || String(e) }
+    }
+  })
+
+  /** 用户点「确认更新」后开始下载（autoDownload=false，不做后台自动下载） */
+  ipcMain.handle('updater:download', async () => {
+    try {
+      await autoUpdater.downloadUpdate()
       return { ok: true }
     } catch (e: any) {
       return { ok: false, error: e?.message || String(e) }

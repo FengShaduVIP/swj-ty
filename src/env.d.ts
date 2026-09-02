@@ -86,6 +86,8 @@ interface UpdaterConfig {
 
 interface UpdaterAPI {
   checkNow: () => Promise<{ ok: boolean; state?: string; error?: string }>
+  /** 用户确认后开始下载更新（手动确认策略：不自动下载） */
+  download: () => Promise<{ ok: boolean; error?: string }>
   quitAndInstall: () => Promise<{ ok: boolean; error?: string }>
   getConfig: () => Promise<UpdaterConfig>
   onStatus: (callback: (status: UpdaterStatus) => void) => void

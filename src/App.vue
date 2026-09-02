@@ -226,7 +226,7 @@
         <div class="set-head">
           <div>
             <div class="set-name">软件更新</div>
-            <div class="set-desc">检测到新版本后后台下载，重启应用即可更新。更新源：{{ updaterConfig?.source || 'GitHub Releases' }}，每 30 分钟自动检查。</div>
+            <div class="set-desc">仅在点击「检查更新」时检查；发现新版本需你确认后才下载，不会自动更新。更新源：{{ updaterConfig?.source || 'GitHub Releases' }}。</div>
             <div class="set-desc set-desc--mirror">
               国内镜像（安装包自动同步自 GitHub）：
               <span class="link" @click="openGitee">Gitee 手动下载</span>
@@ -241,7 +241,7 @@
       </template>
     </el-dialog>
 
-    <!-- ============ 自动更新提示（右下角，不打断业务）============ -->
+    <!-- ============ 软件更新提示（右下角，不打断业务）============ -->
     <UpdateNotifier />
   </div>
 </template>
@@ -274,7 +274,7 @@ const updaterStatus = computed(() => {
   const s = updaterState.value
   switch (s.state) {
     case 'checking': return '正在检查更新…'
-    case 'available': return `发现新版本 v${s.latestVersion}（下载中）`
+    case 'available': return `发现新版本 v${s.latestVersion}，等待确认更新`
     case 'downloading': return `正在下载 v${s.latestVersion}（${Math.floor(s.progress?.percent || 0)}%）`
     case 'downloaded': return `新版本 v${s.latestVersion} 已下载，重启后生效`
     case 'not-available': return `已是最新版本 v${s.currentVersion}`

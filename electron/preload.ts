@@ -27,6 +27,8 @@ export interface UpdaterConfig {
 
 export interface UpdaterAPI {
   checkNow: () => Promise<{ ok: boolean; state?: string; error?: string }>
+  /** 用户确认后开始下载更新（手动确认策略：不自动下载） */
+  download: () => Promise<{ ok: boolean; error?: string }>
   quitAndInstall: () => Promise<{ ok: boolean; error?: string }>
   getConfig: () => Promise<UpdaterConfig>
   onStatus: (callback: (status: UpdaterStatus) => void) => void
@@ -90,6 +92,10 @@ contextBridge.exposeInMainWorld('updaterAPI', {
   /** 立即检查一次更新（手动触发） */
   checkNow: (): Promise<{ ok: boolean; state?: string; error?: string }> =>
     ipcRenderer.invoke('updater:checkNow'),
+
+  /** 用户确认后开始下载更新（手动确认策略：不自动下载） */
+  download: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('updater:download'),
 
   /** 退出并应用已下载的更新（重启） */
   quitAndInstall: (): Promise<{ ok: boolean; error?: string }> =>
