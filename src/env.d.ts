@@ -98,8 +98,44 @@ interface ShellAPI {
   openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>
 }
 
+interface BackendLoginResult {
+  ok: boolean
+  userId?: number
+  username?: string
+  expiresTime?: number
+  error?: string
+}
+
+interface BackendAuthStatus {
+  loggedIn: boolean
+  userId?: number
+  username?: string
+  expiresTime?: number
+}
+
+interface BackendAuthAPI {
+  login: (credentials: { username: string; password: string }) => Promise<BackendLoginResult>
+  getStatus: () => Promise<BackendAuthStatus>
+  logout: () => Promise<{ ok: boolean }>
+}
+
+interface DispatchUploadResult {
+  ok: boolean
+  error?: string
+}
+
+interface DispatchAPI {
+  upload: (record: {
+    btName: string
+    dispatchedAt: number
+    params: { label: string; index?: number; value: unknown }[]
+  }) => Promise<DispatchUploadResult>
+}
+
 interface Window {
   serialAPI: SerialAPI
   updaterAPI: UpdaterAPI
   shellAPI: ShellAPI
+  authAPI: BackendAuthAPI
+  dispatchAPI: DispatchAPI
 }

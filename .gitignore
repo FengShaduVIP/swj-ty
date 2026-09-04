@@ -5,6 +5,7 @@ dist-win/
 release/
 *.log
 .DS_Store
+.env.local
 /.idea/
 /package-lock.json
 /.workbuddy/
@@ -14,3 +15,4 @@ release/
 /.verify-out/
 /dist-bak/
 /.zcode/
+/test-reports/

@@ -2,9 +2,13 @@ import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
 import { join } from 'path'
 import { SerialManager, type AutoConnectConfig } from './serial'
 import { initAutoUpdater } from './updater'
+import { isAuthSessionValid, loginBackend, type AuthSession } from '../src/auth/auth'
+import { uploadDispatchRecord } from '../src/auth/dispatchUpload'
+import { isDispatchUploadRecord } from '../src/dispatch/uploadDecision'
 
 let mainWindow: BrowserWindow | null = null
 const serialManager = new SerialManager()
+let authSession: AuthSession | null = null
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -29,6 +33,66 @@ function createWindow() {
 }
 
 // ======== 串口 IPC 通信 ========
+
+// ======== 后台登录 IPC（token 只保存在主进程内存，应用重启后需重新登录）========
+ipcMain.handle('auth:login', async (_event, credentials: { username?: unknown; password?: unknown }) => {
+  const { username, password } = credentials || {}
+  if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
+    return { ok: false as const, error: '请输入用户名和密码' }
+  }
+
+  try {
+    const session = await loginBackend(username, password)
+    authSession = session
+    return {
+      ok: true as const,
+      userId: session.userId,
+      username: session.username,
+      expiresTime: session.expiresTime,
+    }
+  } catch (error) {
+    authSession = null
+    return { ok: false as const, error: error instanceof Error ? error.message : '登录失败' }
+  }
+})
+
+ipcMain.handle('auth:status', () => {
+  const session = authSession
+  if (!isAuthSessionValid(session)) {
+    authSession = null
+    return { loggedIn: false as const }
+  }
+  return {
+    loggedIn: true as const,
+    userId: session.userId,
+    username: session.username,
+    expiresTime: session.expiresTime,
+  }
+})
+
+ipcMain.handle('auth:logout', () => {
+  authSession = null
+  return { ok: true as const }
+})
+
+// ======== 参数下发记录上传 IPC（accessToken 保持在主进程，渲染进程只传业务数据）========
+ipcMain.handle('dispatch:upload', async (_event, record: unknown) => {
+  const session = authSession
+  if (!isAuthSessionValid(session)) {
+    authSession = null
+    return { ok: false as const, error: '后台登录已过期，请重新登录后再上传下发记录' }
+  }
+  if (!isDispatchUploadRecord(record)) {
+    return { ok: false as const, error: '下发记录数据格式错误' }
+  }
+
+  try {
+    await uploadDispatchRecord(record, session.accessToken)
+    return { ok: true as const }
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : '上传下发记录失败' }
+  }
+})
 
 // 1. 获取可用串口列表
 ipcMain.handle('serial:list', async () => {

@@ -7,8 +7,8 @@
         <div class="header-actions">
           <StatusBadge :status="inFactory ? 'brand' : 'neutral'" :label="inFactory ? '工厂模式' : '普通模式'" />
           <el-button size="small" :disabled="!connected" :loading="busy" @click="readAll"><el-icon><Refresh /></el-icon> 读取全部</el-button>
-          <el-button size="small" type="primary" :disabled="!connected || busy" :loading="busy" @click="writeAll"><el-icon><Upload /></el-icon> 全部写入({{ dirtyCount }})</el-button>
-          <el-button size="small" type="warning" :disabled="!connected || busy" :loading="busy" @click="forceWriteAll"><el-icon><Promotion /></el-icon> 强制下发</el-button>
+          <el-button size="small" type="primary" :disabled="!dispatchAllowed || busy" :loading="busy" @click="writeAll"><el-icon><Upload /></el-icon> 全部写入({{ dirtyCount }})</el-button>
+          <el-button size="small" type="warning" :disabled="!dispatchAllowed || busy" :loading="busy" @click="forceWriteAll"><el-icon><Promotion /></el-icon> 强制下发</el-button>
           <el-button size="small" @click="openTemplateDialog"><el-icon><FolderOpened /></el-icon> 导入配置</el-button>
           <span v-if="importedSourceName" class="import-source" :title="importedSourceName">
             <el-icon><Document /></el-icon>
@@ -62,7 +62,7 @@
       </div>
       <template #footer>
         <el-button size="small" text :disabled="busy" @click="importDialogVisible = false">取消</el-button>
-        <el-button size="small" type="primary" :disabled="!connected || busy" :loading="busy" @click="sendAllImported">
+        <el-button size="small" type="primary" :disabled="!dispatchAllowed || busy" :loading="busy" @click="sendAllImported">
           <el-icon><Promotion /></el-icon> 一键下发所有参数
         </el-button>
       </template>
@@ -310,7 +310,7 @@
                   v-if="f.resetMcu"
                   size="small"
                   type="warning"
-                  :disabled="!connected"
+                  :disabled="!dispatchAllowed"
                   @click="confirmResetMcu"
                 >复位MCU</el-button>
                 <span v-if="f.status === 'ok'" class="dot ok" />
@@ -324,7 +324,7 @@
               size="small"
               type="primary"
               :loading="busy"
-              :disabled="!connected"
+              :disabled="!dispatchAllowed"
               @click="g.action.fn(g)"
             >
               <el-icon><Promotion /></el-icon> {{ g.action.label }}
@@ -352,6 +352,8 @@ import type { Frame } from '@/jbd/jbd-protocol'
 import { paramRawToDisplay, paramDisplayToRaw, paramFormat, paramDisplayDecimals, splitScd, combineScd, scdProtectLabel, scdDelayLabelMs, scdDelayMaxIndex, isChipScdKnown } from '@/jbd/jbd-params'
 import { useJbd } from '@/jbd/useJbd'
 import { addDispatchRecord, type DispatchParam } from '@/db/dispatchLog'
+import { canDispatchParameters, isAuthSessionValid, type AuthSession } from '@/auth/auth'
+import { buildDispatchSnapshot, shouldUploadDispatchRecord, shouldUploadDispatchResult } from '@/dispatch/uploadDecision'
 import StatusBadge from './StatusBadge.vue'
 
 type FieldStatus = 'idle' | 'reading' | 'writing' | 'ok' | 'fail'
@@ -402,9 +404,58 @@ interface CommLogEntry {
   type: 'send' | 'recv' | 'error' | 'info'
   content: string
 }
-const props = defineProps<{ connected: boolean; logs?: CommLogEntry[] }>()
+interface DispatchOutcome {
+  ok: number
+  fail: number
+}
+type RendererAuthSession = Pick<AuthSession, 'userId' | 'username' | 'expiresTime'>
+const props = defineProps<{
+  connected: boolean
+  logs?: CommLogEntry[]
+  authSession: RendererAuthSession | null
+}>()
 // 工具栏紧凑通讯日志条：只保留最近 2 行，配合 CSS 末尾对齐实现自动滚动效果
 const commStrip = computed(() => (props.logs || []).slice(-2))
+
+// 后台登录状态由全局顶栏持有；本页面只根据它禁止/允许参数下发。
+const dispatchAllowed = computed(() => canDispatchParameters(props.connected, props.authSession))
+
+function ensureDispatchAllowed(): boolean {
+  if (!props.connected) {
+    ElMessage.warning('请先连接串口')
+    return false
+  }
+  if (!isAuthSessionValid(props.authSession)) {
+    ElMessage.warning('请先登录后台，再下发参数')
+    return false
+  }
+  return true
+}
+
+/** 方案 B：只要有参数下发成功，就把当前已知完整参数快照上传后台；V3-- 前缀才上传。 */
+async function uploadDispatchSnapshot(): Promise<void> {
+  const btField = allFields.value.find((f) => f.key === 'bt-name')
+  const btName = btField && btField.value != null ? String(btField.value) : ''
+  if (!shouldUploadDispatchRecord(btName)) return
+
+  const params = buildDispatchSnapshot(allFields.value)
+  if (!params.length) return
+  if (!window.dispatchAPI) {
+    ElMessage.warning('当前环境不支持上传下发记录')
+    return
+  }
+
+  const result = await window.dispatchAPI.upload({
+    btName,
+    dispatchedAt: Date.now(),
+    params,
+  })
+  if (!result.ok) {
+    ElMessage.warning(result.error || '参数已下发，但后台同步失败')
+    return
+  }
+  ElMessage.info('已上传最新下发参数到后台')
+}
 function tagLabel(type: string): string {
   return { send: '发送', recv: '接收', error: '错误', info: '信息' }[type] ?? type
 }
@@ -618,7 +669,7 @@ function canRead(f: FieldState): boolean {
 }
 
 function canWrite(f: FieldState): boolean {
-  if (!props.connected) return false
+  if (!dispatchAllowed.value) return false
   // 批量读/写下发进行中禁止单字段下发，避免并发 0xFA 等待者互相抢帧
   if (busy.value) return false
   if (f.readOnly) return false
@@ -1134,7 +1185,7 @@ function resetToDefault() {
 
 // 字段行内「复位 MCU」按钮：发送控制指令 0x03 0x00（原设备控制页 runControl(RESET_MCU) 同源逻辑）
 async function confirmResetMcu() {
-  if (!props.connected) { ElMessage.warning('请先连接串口'); return }
+  if (!ensureDispatchAllowed()) return
   try {
     await ElMessageBox.confirm('确定要复位 MCU 吗？设备将重新启动。', '复位 MCU', { type: 'warning' })
   } catch {
@@ -1494,15 +1545,24 @@ function markWriteOkWithVerify(f: FieldState, exp: WriteExpect): true {
 }
 
 async function writeField(f: FieldState): Promise<boolean> {
+  if (!ensureDispatchAllowed()) return false
   if (!canWrite(f)) return false
+  let mirrorUploaded = false
   // 标称容量单独下发时，也同步镜像满充容量（与批量下发/导入/强制下发行为一致）
   if (f.index === 0) {
     const full = allFields.value.find((x) => x.index === 112)
     if (full && f.value != null) {
       full.value = f.value
-      await sendFields([full])
+      mirrorUploaded = shouldUploadDispatchResult(await sendFields([full]))
     }
   }
+  const ok = await writeFieldDirect(f)
+  if (ok && !mirrorUploaded) await uploadDispatchSnapshot()
+  return ok
+}
+
+async function writeFieldDirect(f: FieldState): Promise<boolean> {
+  if (!canWrite(f)) return false
   // 写入前捕获期望值快照（校验用），必须在下发指令发出前完成
   const exp = captureExpect(f)
   f.status = 'writing'
@@ -1826,7 +1886,8 @@ function markImportedDirty() {
 // 通用下发：对传入字段集合逐一下发，复用全部合成/密码/工厂逻辑。
 // 调用方决定字段集合（脏字段、或全部已读字段），本函数不判断 dirty。
 async function sendFields(fields: FieldState[]) {
-  if (!fields.length) return
+  if (!ensureDispatchAllowed()) return { ok: 0, fail: 0 }
+  if (!fields.length) return { ok: 0, fail: 0 }
   busEpoch++
   busy.value = true
   let ok = 0, fail = 0
@@ -1838,7 +1899,7 @@ async function sendFields(fields: FieldState[]) {
   const verifyQueue: { f: FieldState; exp: WriteExpect }[] = []
   if (autoFactory.value && !inFactory.value) {
     const entered = await enterFactory()
-    if (!entered) { busy.value = false; return }
+    if (!entered) { busy.value = false; return { ok: 0, fail: 0 } }
   }
   for (let i = 0; i < fields.length; i++) {
     progress.value = Math.round(((i) / fields.length) * 100)
@@ -1934,8 +1995,11 @@ async function sendFields(fields: FieldState[]) {
   // 整批下发（写 + 回读校验）全部结束，最后统一退出工厂模式一次 —— 全程只进/退一次。
   if (autoFactory.value) await exitFactory()
   progress.value = 100
+  const outcome: DispatchOutcome = { ok, fail }
+  if (shouldUploadDispatchResult(outcome)) await uploadDispatchSnapshot()
   busy.value = false
   ElMessage[fail ? 'warning' : 'success'](`参数下发完成：${ok} 成功，${fail} 失败`)
+  return outcome
 }
 
 // 满充容量(index 112) 与 标称容量(index 0) 保持一致：
@@ -1953,7 +2017,7 @@ function injectFullChargeMirror(fields: FieldState[]): FieldState[] {
 }
 
 async function writeAll() {
-  if (!props.connected) return
+  if (!ensureDispatchAllowed()) return
   // 导入模板后无需手动修改：把已导入模板涉及的字段重新标记为待下发，
   // 这样「全部写入」在连接状态下始终可点，并能把模板值原样重发一遍（不依赖脏标记）。
   if (importedParams.value.length) markImportedDirty()
@@ -1969,7 +2033,7 @@ async function writeAll() {
 // 强制下发：把当前已读取/已显示的字段值全部下发一遍，不依赖脏标记。
 // 适用于「读出来后又想原样写回一遍」的场景（如参数被设备意外清零、或对照核验）。
 async function forceWriteAll() {
-  if (!props.connected) return
+  if (!ensureDispatchAllowed()) return
   const fields = allFields.value.filter(
     (f) => !f.customDisplay && !f.readOnly && !isBitSwitch(f) && f.index !== undefined && !f.needPassword,
   )
@@ -2003,7 +2067,7 @@ async function forceWriteAll() {
 
 // ====== 分组位图下发（用于功能设置/温度探头配置） ======
 async function writeGroupBitmap(g: { title: string; fields: FieldState[] }, bitIndex: number) {
-  if (!props.connected) return
+  if (!ensureDispatchAllowed()) return
   // 未读取过则先读取
   if (bitmaps.value[bitIndex] === null || bitmaps.value[bitIndex] === undefined) {
     jbdBus.send(buildReadParam(bitIndex, 1))
@@ -2040,6 +2104,7 @@ async function writeGroupBitmap(g: { title: string; fields: FieldState[] }, bitI
     }
   }
   if (autoFactory.value) await exitFactory()
+  if (shouldUploadDispatchResult({ ok, fail })) await uploadDispatchSnapshot()
   busy.value = false
   ElMessage[fail ? 'warning' : 'success'](`[${g.title}] 位图下发完成：${ok} 成功，${fail} 失败`)
 }
@@ -2139,7 +2204,7 @@ function isSendDiff(p: ImportedParam): boolean {
 }
 
 async function sendAllImported() {
-  if (!props.connected) { ElMessage.warning('请先连接串口'); return }
+  if (!ensureDispatchAllowed()) return
   if (!importedParams.value.length) return
   busy.value = true
   let ok = 0, fail = 0
@@ -2195,6 +2260,7 @@ async function sendAllImported() {
   }
   if (autoFactory.value) await exitFactory()
   progress.value = 100
+  if (shouldUploadDispatchResult({ ok, fail })) await uploadDispatchSnapshot()
   busy.value = false
   ElMessage[fail ? 'warning' : 'success'](`一键下发完成：${ok} 成功，${fail} 失败`)
   importDialogVisible.value = false

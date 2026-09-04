@@ -25,6 +25,32 @@ export interface UpdaterConfig {
   currentVersion: string
 }
 
+export interface BackendLoginResult {
+  ok: boolean
+  userId?: number
+  username?: string
+  expiresTime?: number
+  error?: string
+}
+
+export interface BackendAuthStatus {
+  loggedIn: boolean
+  userId?: number
+  username?: string
+  expiresTime?: number
+}
+
+export interface BackendAuthAPI {
+  login: (credentials: { username: string; password: string }) => Promise<BackendLoginResult>
+  getStatus: () => Promise<BackendAuthStatus>
+  logout: () => Promise<{ ok: boolean }>
+}
+
+export interface DispatchUploadResult {
+  ok: boolean
+  error?: string
+}
+
 export interface UpdaterAPI {
   checkNow: () => Promise<{ ok: boolean; state?: string; error?: string }>
   /** 用户确认后开始下载更新（手动确认策略：不自动下载） */
@@ -34,6 +60,28 @@ export interface UpdaterAPI {
   onStatus: (callback: (status: UpdaterStatus) => void) => void
   removeStatusListeners: () => void
 }
+
+// 暴露后台登录能力（请求在主进程执行，accessToken 不进入渲染进程）
+contextBridge.exposeInMainWorld('authAPI', {
+  login: (credentials: { username: string; password: string }): Promise<BackendLoginResult> =>
+    ipcRenderer.invoke('auth:login', credentials),
+
+  getStatus: (): Promise<BackendAuthStatus> =>
+    ipcRenderer.invoke('auth:status'),
+
+  logout: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('auth:logout')
+})
+
+// 暴露参数下发记录上传能力（HTTP 请求与 token 均留在主进程）
+contextBridge.exposeInMainWorld('dispatchAPI', {
+  upload: (record: {
+    btName: string
+    dispatchedAt: number
+    params: { label: string; index?: number; value: unknown }[]
+  }): Promise<DispatchUploadResult> =>
+    ipcRenderer.invoke('dispatch:upload', record)
+})
 
 // 暴露安全的 API 给渲染进程
 contextBridge.exposeInMainWorld('serialAPI', {

@@ -68,6 +68,28 @@
           >
             断开
           </el-button>
+          <span class="sb-divider" />
+          <StatusBadge
+            :status="authSession ? 'ok' : 'warning'"
+            :label="authSession ? `后台已登录 · ${authSession.username}` : '后台未登录'"
+          />
+          <el-button
+            v-if="!authSession"
+            type="primary"
+            size="small"
+            :disabled="authLoading"
+            @click="openLoginDialog"
+          >
+            后台登录
+          </el-button>
+          <el-button
+            v-else
+            size="small"
+            :disabled="authLoading"
+            @click="logoutBackend"
+          >
+            退出登录
+          </el-button>
         </div>
       </div>
 
@@ -146,7 +168,12 @@
             @clear="dataLogs = []"
           />
           <JbdPanel v-show="active === 'monitor'" :connected="connected" />
-          <JbdParamConfig v-show="active === 'config'" :connected="connected" :logs="dataLogs" />
+          <JbdParamConfig
+            v-show="active === 'config'"
+            :connected="connected"
+            :logs="dataLogs"
+            :auth-session="authSession"
+          />
           <DispatchLog v-show="active === 'log'" />
         </section>
       </main>
@@ -241,6 +268,33 @@
       </template>
     </el-dialog>
 
+    <!-- ============ 后台登录（tenantName / rememberMe 使用固定默认值）============ -->
+    <el-dialog
+      v-model="loginDialogVisible"
+      title="后台登录"
+      width="400px"
+      align-center
+      class="vg-dialog"
+      :close-on-click-modal="false"
+    >
+      <div class="login-tip">登录后台后才能下发参数。</div>
+      <el-input v-model="loginUsername" placeholder="用户名" :disabled="authLoading" @keyup.enter="submitLogin" />
+      <el-input
+        v-model="loginPassword"
+        type="password"
+        show-password
+        placeholder="密码"
+        :disabled="authLoading"
+        class="login-password"
+        @keyup.enter="submitLogin"
+      />
+      <div v-if="loginError" class="login-error">{{ loginError }}</div>
+      <template #footer>
+        <el-button size="small" text :disabled="authLoading" @click="loginDialogVisible = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="authLoading" @click="submitLogin">登录</el-button>
+      </template>
+    </el-dialog>
+
     <!-- ============ 软件更新提示（右下角，不打断业务）============ -->
     <UpdateNotifier />
   </div>
@@ -255,12 +309,14 @@ import JbdPanel from './components/JbdPanel.vue'
 import JbdParamConfig from './components/JbdParamConfig.vue'
 import DispatchLog from './components/DispatchLog.vue'
 import ConnIndicator from './components/ConnIndicator.vue'
+import StatusBadge from './components/StatusBadge.vue'
 import UpdateNotifier from './components/UpdateNotifier.vue'
 import { useUpdater } from './composables/useUpdater'
 import { ui, setConnected, setConnecting, setDisconnected, markCommError } from './store'
 import { jbdBus } from './jbd/jbd-bus'
 import { describeFrame as describeJbdFrame } from './jbd/jbd-protocol'
 import { useJbd } from './jbd/useJbd'
+import type { AuthSession } from './auth/auth'
 import pkg from '../package.json'
 import { LOG_MAX_LINES } from './constants'
 
@@ -328,6 +384,105 @@ const ports = ref<SerialPortInfo[]>([])
 const topPort = ref('')
 // 串口连接成功后，把顶部下拉框同步到当前端口；断开时保留原选择，方便重连
 watch(() => ui.portPath, (p) => { if (p) topPort.value = p }, { immediate: true })
+
+// ===== 后台登录：状态显示在顶部连接/断开按钮右侧；token 仍只留在 Electron 主进程 =====
+type RendererAuthSession = Pick<AuthSession, 'userId' | 'username' | 'expiresTime'>
+const authSession = ref<RendererAuthSession | null>(null)
+const authLoading = ref(false)
+const loginDialogVisible = ref(false)
+const loginUsername = ref('admin')
+const loginPassword = ref('')
+const loginError = ref('')
+let authExpiryTimer: number | undefined
+
+function clearAuthExpiryTimer() {
+  if (authExpiryTimer !== undefined) {
+    window.clearTimeout(authExpiryTimer)
+    authExpiryTimer = undefined
+  }
+}
+
+function setAuthSession(session: RendererAuthSession | null) {
+  clearAuthExpiryTimer()
+  authSession.value = session
+  if (!session) return
+  const delay = session.expiresTime - Date.now()
+  if (delay <= 0) {
+    authSession.value = null
+    return
+  }
+  authExpiryTimer = window.setTimeout(() => {
+    authSession.value = null
+    ElMessage.warning('后台登录已过期，请重新登录后再下发参数')
+  }, delay)
+}
+
+async function refreshAuthStatus() {
+  if (!window.authAPI) return
+  try {
+    const status = await window.authAPI.getStatus()
+    setAuthSession(
+      status.loggedIn
+        ? { userId: status.userId!, username: status.username!, expiresTime: status.expiresTime! }
+        : null,
+    )
+  } catch {
+    setAuthSession(null)
+    ElMessage.error('获取后台登录状态失败')
+  }
+}
+
+function openLoginDialog() {
+  loginUsername.value = 'admin'
+  loginPassword.value = ''
+  loginError.value = ''
+  loginDialogVisible.value = true
+}
+
+async function submitLogin() {
+  if (authLoading.value) return
+  if (!window.authAPI) {
+    loginError.value = '当前环境不支持后台登录'
+    return
+  }
+  authLoading.value = true
+  loginError.value = ''
+  try {
+    const result = await window.authAPI.login({
+      username: loginUsername.value,
+      password: loginPassword.value,
+    })
+    if (!result.ok) {
+      loginError.value = result.error || '登录失败'
+      return
+    }
+    setAuthSession({
+      userId: result.userId!,
+      username: result.username!,
+      expiresTime: result.expiresTime!,
+    })
+    loginDialogVisible.value = false
+    ElMessage.success(`后台登录成功：${result.username}`)
+  } catch {
+    loginError.value = '后台登录请求失败，请稍后重试'
+  } finally {
+    authLoading.value = false
+  }
+}
+
+async function logoutBackend() {
+  if (authLoading.value) return
+  authLoading.value = true
+  try {
+    await window.authAPI?.logout()
+    setAuthSession(null)
+    ElMessage.success('已退出后台登录')
+  } catch {
+    ElMessage.error('退出后台登录失败')
+  } finally {
+    authLoading.value = false
+  }
+}
 
 interface LogEntry {
   time: string
@@ -556,6 +711,7 @@ onMounted(() => {
   window.addEventListener('keydown', onKey)
   tickTimer = window.setInterval(tick, 1000)
   tick()
+  refreshAuthStatus()
   // 启用自动连接时先停留在「设备连接」页，连接验证成功后再跳转到实时监测页
   if (autoconn.value.enabled) active.value = 'connect'
   // 关键：把帧总线接到真实串口。否则 jbdBus.send/sendAck 发现 sender 为 null，
@@ -582,6 +738,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', onKey)
+  clearAuthExpiryTimer()
   if (tickTimer) clearInterval(tickTimer)
   window.serialAPI?.removeAllListeners?.()
   jbdBus.clear()
@@ -625,6 +782,8 @@ onUnmounted(() => {
 .sb-port { display: flex; align-items: center; gap: var(--space-3); }
 .sb-port .el-select { --el-component-size-small: 24px; }
 .sb-port .el-button { height: 24px; padding: 0 12px; font-size: var(--fs-caption); }
+.sb-port :deep(.badge) { max-width: 190px; }
+.sb-port :deep(.badge-text) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .sb-right { display: flex; align-items: center; gap: var(--space-5); margin-left: auto; }
 .sb-chip {
@@ -649,6 +808,18 @@ onUnmounted(() => {
 @keyframes updater-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 .sb-clock { font-size: var(--fs-caption); color: var(--text-secondary); }
 .sb-ver { font-size: var(--fs-caption); color: var(--text-tertiary); }
+
+.login-tip {
+  margin-bottom: 12px;
+  font-size: var(--fs-body-sm);
+  color: var(--text-secondary);
+}
+.login-password { margin-top: 10px; }
+.login-error {
+  margin-top: 8px;
+  font-size: var(--fs-caption);
+  color: var(--critical);
+}
 
 /* ---------- 主体 ---------- */
 .body {
