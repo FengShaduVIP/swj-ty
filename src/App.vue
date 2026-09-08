@@ -1,4 +1,6 @@
 <template>
+  <!-- Element Plus 改为按需引入后，中文 locale 由 config-provider 提供（替代 app.use(ElementPlus, { locale })） -->
+  <el-config-provider :locale="zhCn">
   <div class="app" :class="{ 'app-compact': compact }">
     <!-- ============ 顶部状态栏（h48 · DESIGN 4.8）============ -->
     <header class="statusbar">
@@ -226,19 +228,27 @@
           </div>
           <div class="set-field">
             <label>波特率</label>
-            <el-select v-model="autoconn.baudRate" :options="BAUD_OPTIONS.map(b => ({ label: b, value: b }))" />
+            <el-select v-model="autoconn.baudRate">
+              <el-option v-for="b in BAUD_OPTIONS" :key="b" :label="String(b)" :value="b" />
+            </el-select>
           </div>
           <div class="set-field">
             <label>数据位</label>
-            <el-select v-model="autoconn.dataBits" :options="DATABIT_OPTIONS.map(d => ({ label: d, value: d }))" />
+            <el-select v-model="autoconn.dataBits">
+              <el-option v-for="d in DATABIT_OPTIONS" :key="d" :label="String(d)" :value="d" />
+            </el-select>
           </div>
           <div class="set-field">
             <label>停止位</label>
-            <el-select v-model="autoconn.stopBits" :options="STOPBIT_OPTIONS.map(s => ({ label: String(s), value: s }))" />
+            <el-select v-model="autoconn.stopBits">
+              <el-option v-for="s in STOPBIT_OPTIONS" :key="s" :label="String(s)" :value="s" />
+            </el-select>
           </div>
           <div class="set-field">
             <label>校验位</label>
-            <el-select v-model="autoconn.parity" :options="PARITY_OPTIONS" />
+            <el-select v-model="autoconn.parity">
+              <el-option v-for="p in PARITY_OPTIONS" :key="p.value" :label="p.label" :value="p.value" />
+            </el-select>
           </div>
         </div>
       </div>
@@ -298,11 +308,14 @@
     <!-- ============ 软件更新提示（右下角，不打断业务）============ -->
     <UpdateNotifier />
   </div>
+  </el-config-provider>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, markRaw } from 'vue'
 import { ElMessage } from 'element-plus'
+// 全局中文语言包：el-date-picker 等组件的弹层以中文呈现（英文 locale 会显示月份英文缩写）
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { Connection, DataBoard, Setting, Fold, Expand, Operation, Refresh, Tickets } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
 import JbdPanel from './components/JbdPanel.vue'
@@ -312,15 +325,15 @@ import ConnIndicator from './components/ConnIndicator.vue'
 import StatusBadge from './components/StatusBadge.vue'
 import UpdateNotifier from './components/UpdateNotifier.vue'
 import { useUpdater } from './composables/useUpdater'
-import { ui, setConnected, setConnecting, setDisconnected, markCommError } from './store'
+import { ui, setConnected, setConnecting, setDisconnected, markCommError, type LogEntry } from './store'
 import { jbdBus } from './jbd/jbd-bus'
-import { describeFrame as describeJbdFrame } from './jbd/jbd-protocol'
+import { describeFrame as describeJbdFrame, toHex } from './jbd/jbd-protocol'
 import { useJbd } from './jbd/useJbd'
 import type { AuthSession } from './auth/auth'
-import pkg from '../package.json'
 import { LOG_MAX_LINES } from './constants'
 
-const version = (pkg as any).version || '1.0.0'
+// 版本号由 vite define 编译期注入（避免为读一个字段把整个 package.json 打进 bundle）
+const version = __APP_VERSION__ || '1.0.0'
 
 // ===== 自动更新（共享状态 + 手动检查入口）=====
 const { status: updaterState, config: updaterConfig, checkNow } = useUpdater()
@@ -484,19 +497,18 @@ async function logoutBackend() {
   }
 }
 
-interface LogEntry {
-  time: string
-  type: 'send' | 'recv' | 'error' | 'info'
-  content: string
-}
 const dataLogs = ref<LogEntry[]>([])
+let logSeq = 0
 
 function addLog(type: LogEntry['type'], content: string) {
   const now = new Date()
   const time = now.toLocaleTimeString('zh-CN', { hour12: false }) +
     '.' + now.getMilliseconds().toString().padStart(3, '0')
-  dataLogs.value.push({ time, type, content })
-  if (dataLogs.value.length > LOG_MAX_LINES) dataLogs.value = dataLogs.value.slice(-LOG_MAX_LINES)
+  dataLogs.value.push({ id: ++logSeq, time, type, content })
+  // 用 splice 原地裁剪而非 slice 重建数组：配合 DataLog 的 id key，
+  // 旧条目 DOM 因 key 不变而复用，避免高频日志下 500 行全量重渲
+  const excess = dataLogs.value.length - LOG_MAX_LINES
+  if (excess > 0) dataLogs.value.splice(0, excess)
 }
 
 // ===== 串口连接 =====
@@ -552,7 +564,7 @@ async function handleSend(data: number[]) {
   if (!connected.value) return
   try {
     await window.serialAPI.send(data)
-    const hex = data.map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+    const hex = toHex(data)
     const desc = describeJbdFrame(data)
     const prefix = desc ? `${desc}-->主机发送：` : '发送: '
     addLog('send', `${prefix}${hex}`)
@@ -615,40 +627,28 @@ function onSettingsClose() {
 }
 
 // ===== 连接成功后验证 BMS 应答再跳转实时监测页 =====
-const { basicInfo, readBasic } = useJbd()
+const { basicInfo } = useJbd()
 const pendingVerify = ref(false)
 const pendingJump = ref(false)
 let verifyTimer: ReturnType<typeof setTimeout> | null = null
-// 嘉百达等设备在串口刚打开后首帧常被丢弃（第一次发送无返回，第二次才有应答）。
-// 连接验证补发多次（间隔 400ms），任一收到即成功，彻底规避首帧丢弃导致的「超时无响应」。
-let verifyRetryTimers: number[] = []
-function clearVerifyRetries() {
-  verifyRetryTimers.forEach((t) => clearTimeout(t))
-  verifyRetryTimers = []
-}
+// 发帧由 useJbd.initAfterConnect 统一串行执行（首帧丢弃补偿：最多 3 次重发），
+// 这里只负责等待应答结果并提示 / 跳转，不再自己补发避免与初始化序列抢总线。
+// 超时上限需覆盖 3 次 × (1.5s 应答超时 + 400ms 间隔) 的最坏情况。
 function startVerify(autoJump = false) {
   pendingVerify.value = true
   pendingJump.value = autoJump
-  clearVerifyRetries()
-  // 第 0 次立即发（可能丢弃），其后每 400ms 补发一次，最多 3 次
-  for (let i = 0; i < 3; i++) {
-    const t = window.setTimeout(() => { if (pendingVerify.value) readBasic() }, i * 400)
-    verifyRetryTimers.push(t)
-  }
   if (verifyTimer) clearTimeout(verifyTimer)
   verifyTimer = setTimeout(() => {
-    clearVerifyRetries()
     if (pendingVerify.value) {
       pendingVerify.value = false
       pendingJump.value = false
       ElMessage.warning('串口已打开，但未收到 BMS 应答，请确认设备与串口参数')
     }
-  }, 3000)
+  }, 8000)
 }
 watch(basicInfo, (v) => {
   if (v && pendingVerify.value) {
     pendingVerify.value = false
-    clearVerifyRetries()
     const shouldJump = pendingJump.value
     pendingJump.value = false
     if (verifyTimer) { clearTimeout(verifyTimer); verifyTimer = null }
@@ -720,8 +720,7 @@ onMounted(() => {
 
   window.serialAPI?.onData?.((data: number[]) => {
     const bytes = Array.from(data)
-    const hex = bytes.map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
-    addLog('recv', `接收: ${hex}`)
+    addLog('recv', `接收: ${toHex(bytes)}`)
     // 把原始字节喂给 JBD 帧总线
     jbdBus.feed(bytes)
   })

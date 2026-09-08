@@ -34,10 +34,7 @@ export interface ParamDef {
   ascii?: boolean
 }
 
-function toSigned16(v: number): number {
-  v &= 0xffff
-  return v >= 0x8000 ? v - 0x10000 : v
-}
+import { toSigned16 } from './jbd-protocol'
 
 // 单寄存器参数（0~55）
 const SINGLE: Omit<ParamDef, 'index'>[] = [
@@ -145,6 +142,10 @@ function buildTable(): ParamDef[] {
 
 export const PARAM_TABLE: ParamDef[] = buildTable()
 
+// index → 定义 的哈希索引：换算/格式化函数在批量渲染时高频调用，
+// 用 Map 查找替代对 176 项表的线性扫描。
+const PARAM_BY_INDEX = new Map<number, ParamDef>(PARAM_TABLE.map((p) => [p.index, p]))
+
 export const CHIP_TYPES: Record<number, string> = {
   0: 'TI 方案',
   1: '凹凸 7717',
@@ -157,7 +158,7 @@ export const CHIP_TYPES: Record<number, string> = {
 
 // ============================ 换算工具 ============================
 function defOf(reg: number): ParamDef | undefined {
-  return PARAM_TABLE.find((p) => p.index === reg)
+  return PARAM_BY_INDEX.get(reg)
 }
 
 /** 原始 16 位值 → 显示值（含小数/偏移） */

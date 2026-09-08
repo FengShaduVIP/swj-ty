@@ -18,8 +18,8 @@
       </div>
 
       <div
-        v-for="(log, idx) in logs"
-        :key="idx"
+        v-for="log in logs"
+        :key="log.id"
         class="log-entry"
         :class="'log-' + log.type"
       >
@@ -34,12 +34,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 import { List, Document } from '@element-plus/icons-vue'
-
-interface LogEntry {
-  time: string
-  type: 'send' | 'recv' | 'error' | 'info'
-  content: string
-}
+import type { LogEntry } from '@/store'
 
 const props = defineProps<{ logs: LogEntry[] }>()
 defineEmits<{ clear: [] }>()

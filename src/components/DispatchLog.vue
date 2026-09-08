@@ -108,7 +108,7 @@ async function onRemove(id: string) {
             <el-table :data="row.params" size="small" :border="false" max-height="340">
               <el-table-column prop="label" label="参数" min-width="180" />
               <el-table-column label="寄存器" width="96">
-                <template #default="{ row: p }">{{ regHex(p) }}</template>
+                <template #default="{ row: p }">{{ regHex(p as DispatchParam) }}</template>
               </el-table-column>
               <el-table-column label="下发值" min-width="160">
                 <template #default="{ row: p }">{{ fmtValue(p.value) }}</template>

@@ -325,7 +325,7 @@
               type="primary"
               :loading="busy"
               :disabled="!dispatchAllowed"
-              @click="g.action.fn(g)"
+              @click="g.action && writeGroupBitmap(g, g.action.bitIndex)"
             >
               <el-icon><Promotion /></el-icon> {{ g.action.label }}
             </el-button>
@@ -345,7 +345,6 @@ import { Setting, Refresh, Upload, FolderOpened, Download, Files, Promotion, Ran
 import { jbdBus } from '@/jbd/jbd-bus'
 import {
   buildReadParam, buildWriteParam, buildSetBtName,
-  buildEnterFactory, buildExitFactory,
   buildControlCommand, CONTROL_FUNC,
 } from '@/jbd/jbd-protocol'
 import type { Frame } from '@/jbd/jbd-protocol'
@@ -354,56 +353,16 @@ import { useJbd } from '@/jbd/useJbd'
 import { addDispatchRecord, type DispatchParam } from '@/db/dispatchLog'
 import { canDispatchParameters, isAuthSessionValid, type AuthSession } from '@/auth/auth'
 import { buildDispatchSnapshot, shouldUploadDispatchRecord, shouldUploadDispatchResult } from '@/dispatch/uploadDecision'
+import { FRAME_TIMEOUT_MS } from '@/constants'
+import type { LogEntry } from '@/store'
+import { useTemplates } from './param-config/useTemplates'
+import { useFactory } from './param-config/useFactory'
+import { useGroupOrder } from './param-config/useGroupOrder'
+import { buildColumnsFromTitles, defaultColumnOrder } from './param-config/groupDefs'
+import type { FieldState, GroupObj, ImportedParam } from './param-config/types'
 import StatusBadge from './StatusBadge.vue'
 
-type FieldStatus = 'idle' | 'reading' | 'writing' | 'ok' | 'fail'
-type CustomDisplayKind = 'chipType' | 'hwVersion' | 'ntcCount' | 'balanceMode' | 'date' | 'serialRaw'
-
-interface FieldDef {
-  label: string
-  index?: number
-  unit?: string
-  decimals?: number
-  step?: number
-  min?: number
-  max?: number
-  note?: string
-  /** 唯一 key（用于 v-for；当 index 不可用时用 label 兜底） */
-  key?: string
-  /** ASCII 块字段：读取 N 个连续寄存器并解码为字符串（只读） */
-  ascii?: boolean
-  ascii_len?: number
-  /** 位开关字段（与 bitIndex/bit 配合） */
-  bitIndex?: number
-  bit?: number
-  /** 只读字段（不可下发，常用于设备标识 / 协议未涵盖） */
-  readOnly?: boolean
-  /** 自定义展示：值为 customDisplayValue() 返回值；不参与 0xFA 读写 */
-  customDisplay?: CustomDisplayKind
-  /** 跨列占满（用于检流阻值等） */
-  fullWidth?: boolean
-  /** 字段行内附带「复位 MCU」按钮（发送控制指令 0x03 0x00） */
-  resetMcu?: boolean
-  /** 下拉选项字段：value 为下发到 BMS 的原始寄存器值 */
-  options?: { label: string; value: number }[]
-  /** 复合保护字段：单个寄存器 16 位，低字节高半字节=保护值档位(level)、低字节低半字节=延迟档位(delay) */
-  kind?: 'scd'
-  scdPart?: 'level' | 'delay'
-  /** 下发前需要输入密码校验（如检流阻值） */
-  needPassword?: boolean
-}
-
-interface FieldState extends FieldDef {
-  value: any
-  dirty: boolean
-  status: FieldStatus
-}
-
-interface CommLogEntry {
-  time: string
-  type: 'send' | 'recv' | 'error' | 'info'
-  content: string
-}
+interface CommLogEntry extends LogEntry {}
 interface DispatchOutcome {
   ok: number
   fail: number
@@ -460,120 +419,35 @@ function tagLabel(type: string): string {
   return { send: '发送', recv: '接收', error: '错误', info: '信息' }[type] ?? type
 }
 
-type ImportStatus = 'ok' | 'fail' | undefined
-interface ImportedParam {
-  index: number; label: string; unit: string; value: number | string; raw: number; status?: ImportStatus
-  current?: number | string | null  // 导入前设备上真实的当前值，用于与下发值比对
-  ascii?: string  // ASCII 块参数（如生产厂商信息）：以字符串形式下发，raw 列不适用
-}
 const importedParams = ref<ImportedParam[]>([])
 const importDialogVisible = ref(false)
 // 当前已导入的来源名称（模板名或文件名），用于在主页面上提示用户选的是哪个
 const importedSourceName = ref<string>('')
 
-// ====== 本地配置模板（localStorage） ======
-interface ConfigTemplate {
-  id: string
-  name: string
-  createdAt: number
-  updatedAt: number
-  data: any  // 与导出文件同构：{ type, version, params: [...] }
-}
-const TEMPLATE_KEY = 'jbd-param-templates'
-const templateDialogVisible = ref(false)
-const templates = ref<ConfigTemplate[]>([])
-
-function loadTemplates() {
-  try {
-    const raw = localStorage.getItem(TEMPLATE_KEY)
-    templates.value = raw ? JSON.parse(raw) : []
-    if (!Array.isArray(templates.value)) templates.value = []
-  } catch {
-    templates.value = []
-  }
-}
-function persistTemplates() {
-  try { localStorage.setItem(TEMPLATE_KEY, JSON.stringify(templates.value)) } catch { /* 忽略写入失败 */ }
-}
-function genId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
-}
-function formatDate(ts: number): string {
-  const d = new Date(ts)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
-
-function openTemplateDialog() {
-  loadTemplates()
-  templateDialogVisible.value = true
-}
-
-// 从模板列表中选择一个模板直接导入
-function importFromTemplate(t: ConfigTemplate) {
-  templateDialogVisible.value = false
-  importedSourceName.value = '模板：' + t.name
-  applyImport(t.data)
-}
-
-// 模板对话框内的「从文件导入」：关闭对话框后用原流程解析
-function onFileChangeFromDialog(uploadFile: any) {
-  templateDialogVisible.value = false
-  onFileChange(uploadFile)
-}
-
-// 当前配置保存为本地模板
-async function saveAsTemplate() {
-  const data = buildExportData()
-  if (!data.params.length) { ElMessage.warning('当前没有可保存的参数（请先读取或填写）'); return }
-  try {
-    const { value } = await ElMessageBox.prompt('请输入模板名称', '保存为模板', {
-      inputValue: `模板 ${templates.value.length + 1}`,
-      confirmButtonText: '保存',
-      cancelButtonText: '取消',
-    })
-    const name = (value || '').trim() || `模板 ${templates.value.length + 1}`
-    const now = Date.now()
-    templates.value.push({ id: genId(), name, createdAt: now, updatedAt: now, data })
-    persistTemplates()
-    ElMessage.success(`已保存模板「${name}」`)
-  } catch { /* 用户取消 */ }
-}
-
-async function renameTemplate(t: ConfigTemplate) {
-  try {
-    const { value } = await ElMessageBox.prompt('修改模板名称', '重命名模板', {
-      inputValue: t.name,
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-    })
-    const name = (value || '').trim()
-    if (!name) return
-    t.name = name
-    t.updatedAt = Date.now()
-    persistTemplates()
-  } catch { /* 用户取消 */ }
-}
-
-async function deleteTemplate(t: ConfigTemplate) {
-  try {
-    await ElMessageBox.confirm(`确定删除模板「${t.name}」吗？此操作不可恢复。`, '删除模板', { type: 'warning' })
-    templates.value = templates.value.filter((x) => x.id !== t.id)
-    persistTemplates()
-  } catch { /* 用户取消 */ }
-}
+// ====== 本地配置模板（localStorage）：列表/存/删/导入（见 param-config/useTemplates.ts） ======
+// 依赖的页面级回调（applyImport/onFileChange/buildExportData 均为函数声明，存在提升）
+const {
+  templates, templateDialogVisible, openTemplateDialog, importFromTemplate,
+  onFileChangeFromDialog, saveAsTemplate, renameTemplate, deleteTemplate, formatDate,
+} = useTemplates({
+  buildExportData: () => buildExportData(),
+  applyImport,
+  onFileChange,
+  setImportedSourceName: (name) => { importedSourceName.value = name },
+})
 
 function fieldByIndex(index: number): FieldState | undefined {
   return allFields.value.find((f) => f.index === index)
 }
 
-const autoFactory = ref(true)
-const inFactory = ref(false)
-const busy = ref(false)
+// 工厂模式进入/退出（见 param-config/useFactory.ts）
+const { autoFactory, inFactory, enterFactory, exitFactory } = useFactory()
+const j = useJbd()
+// 批量读/写进行中标志：直接使用 useJbd 的共享 batchBusy，
+// 使批量操作期间实时监测的自动轮询自动暂停（批量结束后恢复），批量帧不再与轮询帧抢总线。
+const busy = j.batchBusy
 const progress = ref(0)
 const brandColor = '#1F6FE0'
-
-const j = useJbd()
 
 // ====== ASCII 解析 ======
 /** 从 0xFA 多寄存器应答中解码 ASCII 字串
@@ -581,7 +455,7 @@ const j = useJbd()
  *  按 PDF V12：条形码/BMS 编码/厂商信息均采用 ASCII 码传送，第一个字节 = 字符串长度，
  *  后续字节为 ASCII 字符。寄存器按大端存放（高字节在前），因此直接顺序取 data[3..] 即为字节流。
  */
-function parseAsciiResponse(resp: any, maxBytes: number): string {
+function parseAsciiResponse(resp: Frame | null, maxBytes: number): string {
   if (!resp || resp.timeout || resp.status !== 0x00 || resp.cmd !== 0xfa) return ''
   const data = resp.data
   if (!data || data.length < 4) return ''
@@ -698,10 +572,6 @@ function onBalanceModeChange(f: FieldState, val: any) {
   f.dirty = true
 }
 
-function makeField(def: FieldDef): FieldState {
-  return { ...def, value: def.bitIndex !== undefined ? false : null, dirty: false, status: 'idle' }
-}
-
 /** 数值字段输入：el-input type=number 回传字符串，转 number；空值置 null */
 function onNumInput(f: FieldState, v: any) {
   if (v === '' || v === null || v === undefined) f.value = null
@@ -766,31 +636,34 @@ const shuntMOhm = computed(() => {
 })
 
 // ====== 下发密码校验（仅检流阻值等 needPassword 字段） ======
-const PWD_FIXED = 'tyln@1688'
+// 密码常量存放于主进程（electron/main.ts），渲染层 bundle 不落明文；
+// 这里只提交候选值由主进程比对，属于业务确认口令而非安全边界。
 const pwdDialogVisible = ref(false)
 const pwdInput = ref('')
 const pwdError = ref('')
-const pwdResolve = ref<((ok: boolean) => void) | null>(null)
+// Promise resolve 无需响应式：普通变量即可（还避免出现在 devtools 组件状态里）
+let pwdResolve: ((ok: boolean) => void) | null = null
 
 function confirmPassword(): Promise<boolean> {
   pwdInput.value = ''
   pwdError.value = ''
   pwdDialogVisible.value = true
-  return new Promise((resolve) => { pwdResolve.value = resolve })
+  return new Promise((resolve) => { pwdResolve = resolve })
 }
-function onPwdConfirm() {
-  if (pwdInput.value !== PWD_FIXED) {
+async function onPwdConfirm() {
+  const ok = await window.bmsAPI?.verifyDispatchPwd(pwdInput.value)
+  if (!ok) {
     pwdError.value = '密码错误，请重试'
     return
   }
   pwdDialogVisible.value = false
-  pwdResolve.value?.(true)
-  pwdResolve.value = null
+  pwdResolve?.(true)
+  pwdResolve = null
 }
 function onPwdCancel() {
   pwdDialogVisible.value = false
-  pwdResolve.value?.(false)
-  pwdResolve.value = null
+  pwdResolve?.(false)
+  pwdResolve = null
 }
 
 /** ASCII 字段输入：直接存字符串并标脏 */
@@ -844,211 +717,9 @@ function encodeAsciiValue(f: FieldState): number[] {
   return bytes
 }
 
-// ====== 分组定义（1 排 2 列瀑布流布局，每组内字段 3 列网格，共 11 组） ======
-type GroupAction = {
-  label: string
-  fn: (g: { title: string; fields: FieldState[] }) => void | Promise<void>
-}
-
-const GROUP_DEFS: { title: string; order: number; cols?: number; action?: GroupAction; fields: FieldDef[] }[] = [
-  // 1. 基本设置（12 项 / 3 列 × 4 行）
-  {
-    title: '基本设置',
-    order: 1,
-    fields: [
-      { label: '蓝牙名称', key: 'bt-name', index: 88, ascii: true, ascii_len: 16, fullWidth: true, resetMcu: true },
-      { label: '芯片类型', key: 'chip-type', customDisplay: 'chipType' },
-      { label: '电池SN码', key: 'sn', index: 6, customDisplay: 'serialRaw', readOnly: true },
-      { label: '电池型号', key: 'battery-model', index: 158, ascii: true, ascii_len: 12, readOnly: true },
-      { label: '生产厂商信息', key: 'mfr', index: 56, ascii: true, ascii_len: 16 },
-      { label: 'BMS编码信息', key: 'bms-ver', index: 72, ascii: true, ascii_len: 16 },
-      { label: 'BMS型号', key: 'bms-hw-name', index: 176, ascii: true, ascii_len: 8, readOnly: true },
-      { label: '生产日期', key: 'prod-date', index: 5, customDisplay: 'date' },
-      { label: '额定充电电压', index: 117, unit: 'V', decimals: 1, step: 0.1 },
-      { label: '额定充电电流', index: 119, unit: 'A', decimals: 0 },
-      { label: '额定放电电流', index: 118, unit: 'A', decimals: 0 },
-      { label: '额定放电功率', index: 120, unit: 'W', decimals: 0 },
-    ],
-  },
-  // 2. 电流设置（10 项 / 3 列 × 4 行）
-  {
-    title: '电流设置',
-    order: 2,
-    fields: [
-      { label: '充电过流保护', index: 24, unit: 'mA', decimals: 0, step: 10 },
-      { label: '充电过流延时', index: 52, unit: 'S', decimals: 0 },
-      { label: '充电过流恢复延时', index: 53, unit: 'S', decimals: 0 },
-      { label: '放电过流保护', index: 25, unit: 'mA', decimals: 0, step: 10 },
-      { label: '放电过流延时', index: 54, unit: 'S', decimals: 0 },
-      { label: '放电过流恢复延时', index: 55, unit: 'S', decimals: 0 },
-      { label: '二级过流保护', index: 40, kind: 'scd', scdPart: 'level'},
-      { label: '二级过流延时', index: 40, kind: 'scd', scdPart: 'delay'},
-      { label: '短路保护', index: 41, kind: 'scd', scdPart: 'level' },
-      { label: '短路保护延时', index: 41, kind: 'scd', scdPart: 'delay'},
-      { label: '短路释放延时', index: 43, unit: 'S', decimals: 0 },
-    ],
-  },
-
-  // 3. 容量电压（12 项 / 3 列 × 4 行）
-  {
-    title: '容量电压',
-    order: 3,
-    fields: [
-      { label: '10%', index: 110, unit: 'mV', decimals: 0 },
-      { label: '20%', index: 37, unit: 'mV', decimals: 0 },
-      { label: '30%', index: 109, unit: 'mV', decimals: 0 },
-      { label: '40%', index: 36, unit: 'mV', decimals: 0 },
-      { label: '50%', index: 108, unit: 'mV', decimals: 0 },
-      { label: '60%', index: 35, unit: 'mV', decimals: 0 },
-      { label: '70%', index: 107, unit: 'mV', decimals: 0 },
-      { label: '80%', index: 34, unit: 'mV', decimals: 0 },
-      { label: '90%', index: 106, unit: 'mV', decimals: 0 },
-      { label: '100%', index: 111, unit: 'mV', decimals: 0 },
-      { label: '置满电压', index: 2, unit: 'mV', decimals: 0 },
-      { label: '置空电压', index: 3, unit: 'mV', decimals: 0 },
-    ],
-  },
-  // 5. 温度探头配置（序号 30 低字节：温度探头 1~8 使能，1 字节 8 bit / 3 列 × 3 行 + 应用配置按钮）
-  {
-    title: '温度探头配置',
-    order: 5,
-    action: { label: '应用配置', fn: (g) => writeGroupBitmap(g, 30) },
-    fields: [
-      { label: '温度探头_1',  key: 'probe-1',  bitIndex: 30, bit: 0  },
-      { label: '温度探头_2',  key: 'probe-2',  bitIndex: 30, bit: 1  },
-      { label: '温度探头_3',  key: 'probe-3',  bitIndex: 30, bit: 2  },
-      { label: '温度探头_4',  key: 'probe-4',  bitIndex: 30, bit: 3  },
-      { label: '温度探头_5',  key: 'probe-5',  bitIndex: 30, bit: 4  },
-      { label: '温度探头_6',  key: 'probe-6',  bitIndex: 30, bit: 5  },
-      { label: '温度探头_7',  key: 'probe-7',  bitIndex: 30, bit: 6  },
-      { label: '温度探头_8',  key: 'probe-8',  bitIndex: 30, bit: 7  },
-    ],
-  },
-  // 6. 均衡设置（4 项 / 3 列 × 2 行）
-  {
-    title: '均衡设置',
-    order: 6,
-    fields: [
-      { label: '均衡开启电压', index: 26, unit: 'mV', decimals: 0 },
-      { label: '均衡开启压差', index: 27, unit: 'mV', decimals: 0 },
-      { label: 'GPS关闭电压', index: 104, unit: 'mV', decimals: 0 },
-      { label: 'GPS关闭延时', index: 105, unit: 'S', decimals: 0 },
-    ],
-  },
-  // 4. 系统设置（6 项 / 3 列 × 2 行）
-  {
-    title: '系统设置',
-    order: 4,
-    fields: [
-      { label: '休眠时间', index: 122, unit: 'S', decimals: 0 },
-      { label: '容量修正间隔', index: 113, unit: 'S', decimals: 0 },
-      { label: '最小识别电流', index: 121, unit: 'mA', decimals: 0 },
-      { label: '循环次数', index: 7, unit: '次', decimals: 0 },
-    ],
-  },
-  // 8. 初始化设置（2 项 / 3 列 × 1 行）
-  {
-    title: '初始化设置',
-    order: 8,
-    fields: [
-      { label: '标称容量', index: 0, unit: 'Ah', decimals: 2, step: 0.01 },
-      { label: '循环容量', index: 1, unit: 'Ah', decimals: 2, step: 0.01 },
-      { label: '满充容量', index: 112, unit: 'Ah', decimals: 2, step: 0.01, readOnly: true },
-    ],
-  },
-  // 9. 温度设置（12 项 / 3 列 × 4 行）
-  {
-    title: '温度设置',
-    order: 9,
-    fields: [
-      { label: '充电高温保护', index: 8, unit: '℃', decimals: 1 },
-      { label: '充电高温恢复', index: 9, unit: '℃', decimals: 1 },
-      { label: '充电高温延时', index: 45, unit: 'S', decimals: 0 },
-      { label: '充电低温保护', index: 10, unit: '℃', decimals: 1 },
-      { label: '充电低温恢复', index: 11, unit: '℃', decimals: 1 },
-      { label: '充电低温延时', index: 44, unit: 'S', decimals: 0 },
-      { label: '放电高温保护', index: 12, unit: '℃', decimals: 1 },
-      { label: '放电高温恢复', index: 13, unit: '℃', decimals: 1 },
-      { label: '放电高温延时', index: 47, unit: 'S', decimals: 0 },
-      { label: '放电低温保护', index: 14, unit: '℃', decimals: 1 },
-      { label: '放电低温恢复', index: 15, unit: '℃', decimals: 1 },
-      { label: '放电低温延时', index: 46, unit: 'S', decimals: 0 },
-    ],
-  },
-  // 10. 保护参数（14 项 / 3 列 × 5 行）
-  {
-    title: '保护参数',
-    order: 10,
-    fields: [
-      { label: '单体过压保护', index: 20, unit: 'mV', decimals: 0 },
-      { label: '单体过压恢复', index: 21, unit: 'mV', decimals: 0 },
-      { label: '单体过压延时', index: 51, unit: 'S', decimals: 0 },
-      { label: '单体欠压保护', index: 22, unit: 'mV', decimals: 0 },
-      { label: '单体欠压恢复', index: 23, unit: 'mV', decimals: 0 },
-      { label: '单体欠压延时', index: 50, unit: 'S', decimals: 0 },
-      { label: '总体过压保护', index: 16, unit: 'V', decimals: 2, step: 0.01 },
-      { label: '总体过压恢复', index: 17, unit: 'V', decimals: 2, step: 0.01 },
-      { label: '总体过压延时', index: 49, unit: 'S', decimals: 0 },
-      { label: '总体欠压保护', index: 18, unit: 'V', decimals: 2, step: 0.01 },
-      { label: '总体欠压恢复', index: 19, unit: 'V', decimals: 2, step: 0.01 },
-      { label: '总体欠压延时', index: 48, unit: 'S', decimals: 0 },
-      { label: '硬件过压保护', index: 38, unit: 'mV', decimals: 0 },
-      { label: '硬件欠压保护', index: 39, unit: 'mV', decimals: 0 },
-    ],
-  },
-
-  // 11. 功能设置（11 项 / 3 列 × 4 行，末行 + 应用设置按钮）
-  {
-    title: '功能设置',
-    order: 11,
-    action: { label: '应用设置', fn: (g) => writeGroupBitmap(g, 29) },
-    fields: [
-      { label: '开关功能', key: 'cfg-sw', bitIndex: 29, bit: 0 },
-      { label: '负载检测', key: 'cfg-load', bitIndex: 29, bit: 1 },
-      { label: '均衡功能', key: 'cfg-bal', bitIndex: 29, bit: 2 },
-      { label: '均衡方式', key: 'cfg-bal-mode', bitIndex: 29, bit: 3, customDisplay: 'balanceMode' },
-      { label: 'LED', key: 'cfg-led', bitIndex: 29, bit: 4 },
-      { label: 'LED数量', key: 'led-count', readOnly: true, note: '需协议补充' },
-      { label: 'RTC', key: 'cfg-rtc', bitIndex: 29, bit: 5 },
-      { label: 'FCC限制', key: 'cfg-fcc', bitIndex: 29, bit: 6 },
-      { label: '充电握手', key: 'cfg-handshake', bitIndex: 29, bit: 7 },
-      { label: 'GPS', key: 'cfg-gps', bitIndex: 29, bit: 8 },
-      { label: '蜂鸣器续延', key: 'cfg-buzzer', bitIndex: 29, bit: 9 },
-    ],
-  },
-  // 7. 检流电阻（独立模块：index 28；导入模板时不随下发）
-  {
-    title: '检流电阻',
-    order: 7,
-    cols: 1,
-    fields: [
-      { label: '检流阻值', index: 28, unit: 'mΩ', decimals: 2, step: 0.01, note: '独立配置', needPassword: true },
-    ],
-  },
-]
-
-type GroupObj = { title: string; cols?: number; action?: GroupAction; fields: FieldState[] }
-const builtGroups: GroupObj[] = GROUP_DEFS.map((g) => ({ title: g.title, cols: g.cols, action: g.action, fields: g.fields.map(makeField) }))
-// 出厂默认左右两列布局（用户拖拽确认后的顺序，已固化进代码）。
-// 如需调整默认排布，直接改这里的标题顺序即可；GROUP_DEFS 中未列出的分组会自动补到右列末尾。
-const defaultColumnOrder: [string[], string[]] = [
-  ['基本设置', '电流设置', '保护参数', '温度探头配置', '检流电阻'],
-  ['初始化设置', '容量电压', '温度设置', '功能设置', '系统设置', '均衡设置'],
-]
-function buildColumnsFromTitles(order: string[][]): GroupObj[][] {
-  const pool = new Map(builtGroups.map((g) => [g.title, g]))
-  const cols: GroupObj[][] = order.map((col) => {
-    const arr: GroupObj[] = []
-    for (const t of col) {
-      const g = pool.get(t)
-      if (g) { arr.push(g); pool.delete(t) }
-    }
-    return arr
-  })
-  for (const g of pool.values()) cols[cols.length - 1].push(g)
-  return cols
-}
+// ====== 分组布局：字段定义与默认列序在 param-config/groupDefs.ts，拖拽排序逻辑在 param-config/useGroupOrder.ts ======
 const columns = ref<GroupObj[][]>(buildColumnsFromTitles(defaultColumnOrder))
+const { dragMode, onDragStart, onDropGroup, onDropColumn, onDragEnd, resetToDefault } = useGroupOrder(columns, defaultColumnOrder)
 // 兼容下游只读消费（字段汇总等）
 const groups = computed(() => columns.value.flat())
 const allFields = computed(() => groups.value.flatMap((g) => g.fields))
@@ -1080,109 +751,6 @@ const displayColumns = computed(() => {
   )
 })
 
-// ====== 分组拖动排序（点击「拖动排序」进入拖动模式；左右两列各自可拖拽重排，也支持跨列移动；顺序持久化到 localStorage） ======
-const DRAG_ORDER_KEY = 'jbd-param-group-order'
-const dragMode = ref(false)
-const draggedTitle = ref<string | null>(null)
-
-// 在左右两列中查找某分组当前所在位置
-function findGroup(title: string): { col: 0 | 1; idx: number } | null {
-  for (const c of [0, 1] as const) {
-    const idx = columns.value[c].findIndex((g) => g.title === title)
-    if (idx >= 0) return { col: c, idx }
-  }
-  return null
-}
-
-function applySavedOrder() {
-  let saved: string[][] | null = null
-  try {
-    const raw = localStorage.getItem(DRAG_ORDER_KEY)
-    if (raw) {
-      const v = JSON.parse(raw)
-      if (Array.isArray(v)) {
-        if (v.every((c) => Array.isArray(c))) {
-          // 新格式：[[左列...],[右列...]]
-          saved = (v as unknown[]).map((c) => (c as unknown[]).filter((x) => typeof x === 'string')) as string[][]
-        } else if (v.every((x) => typeof x === 'string')) {
-          // 旧版单数组格式兼容：按半分迁移到两列
-          const mid = Math.ceil(v.length / 2)
-          saved = [v.slice(0, mid), v.slice(mid)]
-        }
-      }
-    }
-  } catch { /* 忽略损坏的本地存储 */ }
-  if (!saved) return
-  const pool = new Map(columns.value.flat().map((g) => [g.title, g]))
-  const left: GroupObj[] = []
-  const right: GroupObj[] = []
-  for (const t of saved[0] ?? []) {
-    const g = pool.get(t)
-    if (g) { left.push(g); pool.delete(t) }
-  }
-  for (const t of saved[1] ?? []) {
-    const g = pool.get(t)
-    if (g) { right.push(g); pool.delete(t) }
-  }
-  // 新增/缺失的分组补到右列末尾，避免丢失
-  for (const g of pool.values()) right.push(g)
-  columns.value = [left, right]
-}
-function saveOrder() {
-  try {
-    localStorage.setItem(
-      DRAG_ORDER_KEY,
-      JSON.stringify(columns.value.map((col) => col.map((g) => g.title))),
-    )
-  } catch { /* 忽略写入失败（如隐私模式） */ }
-}
-applySavedOrder()
-
-function onDragStart(g: { title: string }) {
-  draggedTitle.value = g.title
-}
-// 拖到某分组卡片上：插入到该卡片所在位置（可在同列或跨列）
-function onDropGroup(targetTitle: string, targetCol: number) {
-  const fromTitle = draggedTitle.value
-  draggedTitle.value = null
-  if (!fromTitle || fromTitle === targetTitle) return
-  const moved = findGroup(fromTitle)
-  if (!moved) return
-  const node = columns.value[moved.col][moved.idx]
-  // 先从原列移除
-  columns.value[moved.col] = columns.value[moved.col].filter((g) => g.title !== fromTitle)
-  // 再插入目标列指定位置
-  const targetArr = columns.value[targetCol].slice()
-  const ti = targetArr.findIndex((g) => g.title === targetTitle)
-  if (ti < 0) targetArr.push(node)
-  else targetArr.splice(ti, 0, node)
-  columns.value[targetCol] = targetArr
-  saveOrder()
-}
-// 拖到列空白区：追加到该列末尾（支持跨列移动）
-function onDropColumn(targetCol: number) {
-  const fromTitle = draggedTitle.value
-  draggedTitle.value = null
-  if (!fromTitle) return
-  const moved = findGroup(fromTitle)
-  if (!moved || moved.col === targetCol) return
-  const node = columns.value[moved.col][moved.idx]
-  columns.value[moved.col] = columns.value[moved.col].filter((g) => g.title !== fromTitle)
-  const targetArr = columns.value[targetCol].slice()
-  targetArr.push(node)
-  columns.value[targetCol] = targetArr
-  saveOrder()
-}
-function onDragEnd() {
-  draggedTitle.value = null
-}
-// 恢复出厂默认顺序（清掉本地存储的拖拽结果，回退到代码固化 defaultColumnOrder）
-function resetToDefault() {
-  try { localStorage.removeItem(DRAG_ORDER_KEY) } catch { /* 忽略 */ }
-  columns.value = buildColumnsFromTitles(defaultColumnOrder)
-  ElMessage.success('已恢复默认顺序')
-}
-
 // 字段行内「复位 MCU」按钮：发送控制指令 0x03 0x00（原设备控制页 runControl(RESET_MCU) 同源逻辑）
 async function confirmResetMcu() {
   if (!ensureDispatchAllowed()) return
@@ -1202,41 +770,7 @@ async function confirmResetMcu() {
   ElMessage.success('已发送复位 MCU 指令')
 }
 
-// ====== 工厂模式 ======
-// 进入/退出改用 sendAck（请求-应答配对）：sendAck 的超时计时从帧真正出队上线那一刻起算
-// （见 jbd-bus.ts pump），而非旧「send + onceResponse」在调用瞬间就启动 1500ms 预算。
-// 旧写法下若实时轮询帧恰在途（共享总线单帧在途锁 busy=true），进入工厂的帧需在队列里等轮询
-// 完成才上线，排队+往返一旦 > 1500ms 即超时 → 首次点击下发失败（设备实则已进入工厂态）。
-// 叠加至多 FACTORY_RETRY 次重试，彻底消除该竞态导致的偶发首次失败（影响所有 0xFA 工厂模式写入）。
-const FACTORY_RETRY = 2
-
-async function enterFactory(): Promise<boolean> {
-  let last: any = null
-  for (let i = 0; i <= FACTORY_RETRY; i++) {
-    last = await jbdBus.sendAck(buildEnterFactory())
-    if (!last.timeout && last.status === 0x00) {
-      inFactory.value = true
-      return true
-    }
-  }
-  ElMessage.error('进入工厂模式失败: ' + (last?.timeout ? '超时' : `0x${(last?.status ?? 0).toString(16)}`))
-  return false
-}
-
-async function exitFactory(): Promise<boolean> {
-  let last: any = null
-  for (let i = 0; i <= FACTORY_RETRY; i++) {
-    last = await jbdBus.sendAck(buildExitFactory())
-    if (!last.timeout && last.status === 0x00) {
-      inFactory.value = false
-      return true
-    }
-  }
-  ElMessage.error('退出工厂模式失败: ' + (last?.timeout ? '超时' : `0x${(last?.status ?? 0).toString(16)}`))
-  return false
-}
-
-function parseParamResponse(resp: any): number | null {
+function parseParamResponse(resp: Frame | null): number | null {
   if (!resp || resp.timeout || resp.status !== 0x00 || resp.cmd !== 0xfa) return null
   if (resp.data.length < 5) return null
   const reg = (resp.data[0] << 8) | resp.data[1]
@@ -1253,7 +787,7 @@ function parseParamResponse(resp: any): number | null {
 // 或错位值恰好相等时的漏报。本函数在总超时预算内循环等待，只接受
 // 「命令码 0xFA + 状态 0x00 + 起始寄存器与请求一致（count ≥ minCount）」的帧，
 // 其余脏帧丢弃后继续等剩余预算；预算耗尽返回 null（与超时同义）。
-async function awaitParamResponse(expectReg: number, timeoutMs = 1500, minCount = 1): Promise<Frame | null> {
+async function awaitParamResponse(expectReg: number, timeoutMs = FRAME_TIMEOUT_MS, minCount = 1): Promise<Frame | null> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     const rest = deadline - Date.now()
@@ -1267,6 +801,24 @@ async function awaitParamResponse(expectReg: number, timeoutMs = 1500, minCount 
   }
 }
 
+/** 批量读（0xFA 多寄存器）应答等待：与 awaitParamResponse 同思路，在总预算内循环等待，
+ *  丢弃寄存器地址/数量不符的脏帧（如前序请求迟到的应答），只接受
+ *  「命令码 0xFA + 状态 0x00 + 起始寄存器与 count 均与请求一致」的帧；预算耗尽返回 null。 */
+async function awaitBatchResponse(expectStart: number, expectCount: number, timeoutMs: number): Promise<Frame | null> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const rest = deadline - Date.now()
+    if (rest <= 0) return null
+    const resp = await jbdBus.onceResponse(rest, 0xfa)
+    if (!resp || resp.timeout) return null
+    if (resp.status !== 0x00 || !resp.data || resp.data.length < 3) continue
+    const reg = (resp.data[0] << 8) | resp.data[1]
+    if (reg !== expectStart || resp.data[2] !== expectCount) continue
+    if (resp.data.length < 3 + expectCount * 2) continue
+    return resp
+  }
+}
+
 // ====== 总线世代计数 ======
 // 批量操作（读取全部 / 本组读取 / 下发）开始时自增；单写下发遗留的后台回读校验
 // （void verifyField，不 await）检测到世代变化即静默退出，避免其 0xFA 读取
@@ -1274,7 +826,7 @@ async function awaitParamResponse(expectReg: number, timeoutMs = 1500, minCount 
 let busEpoch = 0
 
 // ====== 读取/写入单个字段 ======
-async function readField(f: FieldState): Promise<boolean> {
+async function readField(f: FieldState, timeoutMs = FRAME_TIMEOUT_MS): Promise<boolean> {
   if (!props.connected) return false
   // 不能读取：非 date/serialRaw 的 customDisplay、无 index 的 readOnly
   const canReadCustomDisplay = f.customDisplay === 'date' || f.customDisplay === 'serialRaw'
@@ -1287,7 +839,7 @@ async function readField(f: FieldState): Promise<boolean> {
   // 位开关：读一次位图，所有同位图字段同步
   if (isBitSwitch(f)) {
     jbdBus.send(buildReadParam(f.bitIndex!, 1))
-    const resp = await awaitParamResponse(f.bitIndex!)
+    const resp = await awaitParamResponse(f.bitIndex!, timeoutMs)
     const raw = parseParamResponse(resp)
     if (raw === null) { f.status = 'fail'; return false }
     bitmaps.value[f.bitIndex!] = raw
@@ -1306,7 +858,7 @@ async function readField(f: FieldState): Promise<boolean> {
     const len = f.ascii_len ?? 8
     jbdBus.send(buildReadParam(f.index!, len))
     // ASCII 块要求响应 count ≥ len（起始寄存器已由 awaitParamResponse 校验）
-    const resp = await awaitParamResponse(f.index!, 1500, len)
+    const resp = await awaitParamResponse(f.index!, timeoutMs, len)
     if (!resp) {
       f.status = 'fail'; return false
     }
@@ -1319,7 +871,7 @@ async function readField(f: FieldState): Promise<boolean> {
   // date / serialRaw：读 raw 值，由 customDisplay 格式化
   if (canReadCustomDisplay && f.index !== undefined) {
     jbdBus.send(buildReadParam(f.index, 1))
-    const resp = await awaitParamResponse(f.index)
+    const resp = await awaitParamResponse(f.index, timeoutMs)
     const raw = parseParamResponse(resp)
     if (raw === null) { f.status = 'fail'; return false }
     f.value = raw
@@ -1330,7 +882,7 @@ async function readField(f: FieldState): Promise<boolean> {
   // 复合保护字段（scd）：高字节=保护值档位、低字节=延迟档位
   if (f.kind === 'scd') {
     jbdBus.send(buildReadParam(f.index!, 1))
-    const resp = await awaitParamResponse(f.index!)
+    const resp = await awaitParamResponse(f.index!, timeoutMs)
     const raw = parseParamResponse(resp)
     if (raw === null) {
       f.status = 'fail'; return false
@@ -1348,7 +900,7 @@ async function readField(f: FieldState): Promise<boolean> {
   // 下拉选项字段：value 直接存原始寄存器值
   if (f.options) {
     jbdBus.send(buildReadParam(f.index!, 1))
-    const resp = await awaitParamResponse(f.index!)
+    const resp = await awaitParamResponse(f.index!, timeoutMs)
     const raw = parseParamResponse(resp)
     if (raw === null) { f.status = 'fail'; return false }
     f.value = raw & 0xffff
@@ -1485,9 +1037,9 @@ async function verifyField(f: FieldState, exp: WriteExpect, epoch = busEpoch): P
   // 整值不等才判校验失败，并把 level/delay 两个 part 一并标红，便于定位。
   if (f.kind === 'scd' && f.index !== undefined) {
     // scd 回读也重试 3 次（与非 scd 一致），吸收强制下发批量帧密集导致的偶发超时
-    let okRead = await readField(f)
-    if (!okRead && busEpoch === epoch) okRead = await readField(f)
-    if (!okRead && busEpoch === epoch) okRead = await readField(f)
+    let okRead = await readField(f, VERIFY_READ_TIMEOUT_MS)
+    if (!okRead && busEpoch === epoch) okRead = await readField(f, VERIFY_READ_TIMEOUT_MS)
+    if (!okRead && busEpoch === epoch) okRead = await readField(f, VERIFY_READ_TIMEOUT_MS)
     if (busEpoch !== epoch) return
     if (!okRead) {
       failBoth('读取超时或无响应（设备未正确返回下发结果）')
@@ -1516,9 +1068,9 @@ async function verifyField(f: FieldState, exp: WriteExpect, epoch = busEpoch): P
   // 对 BMS 编码信息等大跨度 ASCII 块校验失败返回空串），故比对前保存用户原值，
   // 校验失败时只标红、并恢复 f.value 为用户原下发内容，避免界面显示为空。
   const savedValue = f.value
-  let okRead = await readField(f)
-  if (!okRead && busEpoch === epoch) okRead = await readField(f)
-  if (!okRead && busEpoch === epoch) okRead = await readField(f)
+  let okRead = await readField(f, VERIFY_READ_TIMEOUT_MS)
+  if (!okRead && busEpoch === epoch) okRead = await readField(f, VERIFY_READ_TIMEOUT_MS)
+  if (!okRead && busEpoch === epoch) okRead = await readField(f, VERIFY_READ_TIMEOUT_MS)
   if (busEpoch !== epoch) return
   if (!okRead) {
     f.value = savedValue
@@ -1684,8 +1236,12 @@ async function readGroup(g: { title: string; fields: FieldState[] }) {
 // 串口往返从逐寄存器(~150)降到个位数；若某段批量读失败（设备对较大 count 不稳），自动回退为该段内
 // 逐寄存器单条读（parseParamResponse），兼顾速度与可靠性。两条路径均复用 readField 一致的解析。
 // 实测：寄存器 0~55（count=56）单条批量读正常，故 READ_CHUNK 取 48（留余量，避免逼近设备上限）。
-const READ_TIMEOUT = 1500
 const READ_CHUNK = 48
+
+/** 下发后回读校验阶段的读取超时（ms）：正常一问一答几十毫秒内即返回，300ms 已含约 6 倍
+ *  余量；校验失败仅是行内标红（有逐寄存器回退与 verifyField 补读兜底），无需 FRAME_TIMEOUT_MS
+ *  的 1500ms 全额预算——后者会把瞬时丢帧的最坏耗时放大到秒级。 */
+const VERIFY_READ_TIMEOUT_MS = 300
 
 /** 字段依赖的寄存器序号集合（用于按寄存器去重读取 / 失败定位） */
 function fieldRegisters(f: FieldState): number[] {
@@ -1727,7 +1283,9 @@ function applyFieldFromRaw(f: FieldState, rawMap: Record<number, number>): boole
     }
     const reg = f.index!
     const data = [(reg >> 8) & 0xff, reg & 0xff, len, ...bytes]
-    f.value = parseAsciiResponse({ data, status: 0, cmd: 0xfa } as any, len * 2)
+    // 构造与 0xFA 批量读应答同构的伪帧，复用 parseAsciiResponse 解析
+    const fakeFrame: Frame = { cmd: 0xfa, status: 0x00, len: data.length, data, checksum: [0, 0], callbackId: [], valid: true }
+    f.value = parseAsciiResponse(fakeFrame, len * 2)
     f.dirty = false
     f.status = 'ok'
     return true
@@ -1768,7 +1326,7 @@ function applyFieldFromRaw(f: FieldState, rawMap: Record<number, number>): boole
 
 /** 解析批量读响应：data = [startRegHi, startRegLo, count, v0Hi, v0Lo, ...]，
  * 校验 startReg/count 与请求一致后返回 startReg→raw 映射，否则返回 null（交由回退逻辑处理）。 */
-function parseBatchResponse(resp: any, expectStart: number, expectCount: number): Record<number, number> | null {
+function parseBatchResponse(resp: Frame | null, expectStart: number, expectCount: number): Record<number, number> | null {
   if (!resp || resp.timeout || resp.status !== 0x00 || resp.cmd !== 0xfa) return null
   if (!resp.data || resp.data.length < 3 + expectCount * 2) return null
   const startReg = (resp.data[0] << 8) | resp.data[1]
@@ -1780,6 +1338,25 @@ function parseBatchResponse(resp: any, expectStart: number, expectCount: number)
     map[startReg + i] = ((resp.data[off] << 8) | resp.data[off + 1]) & 0xffff
   }
   return map
+}
+
+/** 去重后的寄存器集合按连续段（run）合并、段内按 READ_CHUNK 切分：
+ *  「读取全部」与批量下发后的回读校验共用，让一条 0xFA 批量读覆盖尽量多的寄存器。 */
+function planReadChunks(regs: number[]): { start: number; count: number }[] {
+  const sorted = [...new Set(regs)].sort((a, b) => a - b)
+  const chunks: { start: number; count: number }[] = []
+  let i = 0
+  while (i < sorted.length) {
+    let j = i + 1
+    while (j < sorted.length && sorted[j] === sorted[j - 1] + 1) j++
+    const runStart = sorted[i]
+    const runLen = j - i
+    for (let s = runStart; s < runStart + runLen; s += READ_CHUNK) {
+      chunks.push({ start: s, count: Math.min(READ_CHUNK, runStart + runLen - s) })
+    }
+    i = j
+  }
+  return chunks
 }
 
 async function readAll() {
@@ -1809,28 +1386,16 @@ async function readAll() {
   if (!regSet.size) { busy.value = false; ElMessage.warning('没有可读取的参数'); return }
   const rawMap: Record<number, number> = {}
   const failedRegs = new Set<number>()
-  // 仅读取实际用到的寄存器：先把去重后的寄存器按连续段（run）合并，再在每个 run 内按
-  // READ_CHUNK 切分，每段一条批量 0xFA 读。这样既不读无关/可能无效的寄存器，又能吃满批量读。
-  const regs = [...regSet].sort((a, b) => a - b)
-  const chunks: { start: number; count: number }[] = []
-  let i = 0
-  while (i < regs.length) {
-    let j = i + 1
-    while (j < regs.length && regs[j] === regs[j - 1] + 1) j++
-    const runStart = regs[i]
-    const runLen = j - i
-    for (let s = runStart; s < runStart + runLen; s += READ_CHUNK) {
-      chunks.push({ start: s, count: Math.min(READ_CHUNK, runStart + runLen - s) })
-    }
-    i = j
-  }
+  // 仅读取实际用到的寄存器：按连续段（run）合并、段内按 READ_CHUNK 切分（planReadChunks），
+  // 每段一条批量 0xFA 读。这样既不读无关/可能无效的寄存器，又能吃满批量读。
+  const chunks = planReadChunks([...regSet])
   let done = 0
   let batchHits = 0, fallbackChunks = 0
   for (const ch of chunks) {
     progress.value = Math.round((done / chunks.length) * 100)
     // 1) 尝试批量读：一次往返拿 READ_CHUNK 个寄存器
     jbdBus.send(buildReadParam(ch.start, ch.count))
-    const resp = await jbdBus.onceResponse(READ_TIMEOUT, 0xfa)
+    const resp = await jbdBus.onceResponse(FRAME_TIMEOUT_MS, 0xfa)
     const batch = parseBatchResponse(resp, ch.start, ch.count)
     if (batch) {
       Object.assign(rawMap, batch)
@@ -1840,7 +1405,7 @@ async function readAll() {
       fallbackChunks++
       for (let r = ch.start; r < ch.start + ch.count; r++) {
         jbdBus.send(buildReadParam(r, 1))
-        const rr = await awaitParamResponse(r, READ_TIMEOUT)
+        const rr = await awaitParamResponse(r, FRAME_TIMEOUT_MS)
         const raw = parseParamResponse(rr)
         if (raw === null) failedRegs.add(r)
         else rawMap[r] = raw
@@ -1880,6 +1445,65 @@ function markImportedDirty() {
     if (seen.has(p.index)) continue
     seen.add(p.index)
     for (const f of allFields.value.filter((x) => x.index === p.index)) f.dirty = true
+  }
+}
+
+/** 批量下发完成后的统一回读校验（verifyQueue 的分流执行）：
+ *  - 普通数值 / 下拉等单寄存器字段：按连续段合并为 0xFA 批量读（与「读取全部」同源、
+ *    已验证可靠），一次往返即可校验一段寄存器；某段批量读失败再逐寄存器单读回退。
+ *  - ASCII 块 / scd 复合字段：设备对大跨度/跨边界批量读返回错位数据（见 readAll 注释），
+ *    维持 verifyField 逐字段单读。
+ *  校验读取统一用 VERIFY_READ_TIMEOUT_MS 短超时；比对按整寄存器 raw 进行（diffMessage），
+ *  不覆写 f.value，界面始终保持用户下发值。 */
+async function verifyFieldsBatched(verifyQueue: { f: FieldState; exp: WriteExpect }[]): Promise<void> {
+  const single: { f: FieldState; exp: WriteExpect }[] = []
+  const batchable: { f: FieldState; exp: WriteExpect }[] = []
+  for (const v of verifyQueue) {
+    const f = v.f
+    const canBatch = f.index !== undefined && !f.ascii && f.kind !== 'scd' &&
+      (!f.customDisplay || f.customDisplay === 'date' || f.customDisplay === 'serialRaw')
+    if (canBatch) batchable.push(v)
+    else single.push(v)
+  }
+  if (batchable.length) {
+    const rawMap: Record<number, number> = {}
+    for (const ch of planReadChunks(batchable.map((v) => v.f.index!))) {
+      jbdBus.send(buildReadParam(ch.start, ch.count))
+      const resp = await awaitBatchResponse(ch.start, ch.count, VERIFY_READ_TIMEOUT_MS)
+      const batch = parseBatchResponse(resp, ch.start, ch.count)
+      if (batch) {
+        Object.assign(rawMap, batch)
+      } else {
+        // 该段批量读失败：段内逐寄存器单读回退（与 readAll 的回退同源）
+        for (let r = ch.start; r < ch.start + ch.count; r++) {
+          jbdBus.send(buildReadParam(r, 1))
+          const rr = await awaitParamResponse(r, VERIFY_READ_TIMEOUT_MS)
+          const raw = parseParamResponse(rr)
+          if (raw !== null) rawMap[r] = raw
+        }
+      }
+    }
+    for (const { f, exp } of batchable) {
+      const gotRaw = rawMap[f.index!]
+      if (gotRaw === undefined) {
+        f.status = 'fail'
+        f.dirty = true
+        ElMessage.error(`校验失败[${f.label}]：读取超时或无响应（设备未正确返回下发结果）`)
+        continue
+      }
+      const diff = diffMessage(f, exp, { raw: gotRaw & 0xffff })
+      if (diff) {
+        f.status = 'fail'
+        f.dirty = true
+        ElMessage.error(`校验失败[${f.label}]：${diff}`)
+      } else {
+        f.status = 'ok'
+        f.dirty = false
+      }
+    }
+  }
+  for (const { f, exp } of single) {
+    await verifyField(f, exp)
   }
 }
 
@@ -1987,10 +1611,10 @@ async function sendFields(fields: FieldState[]) {
   // 全部写完后，统一串行回读校验（与「全部读取」同源 readField）：
   // 仍在同一个工厂会话内（尚未退出），回读与写彻底串行，杜绝并发抢帧
   // （BMS 编码信息 72 等关键字段不再误报）；校验读取在工厂态下更可靠。
+  // 普通数值字段先按连续段批量读校验（一次往返覆盖多个寄存器，见 verifyFieldsBatched），
+  // ASCII / scd 字段仍走逐字段单读。
   if (verifyQueue.length) {
-    for (const { f, exp } of verifyQueue) {
-      await verifyField(f, exp)
-    }
+    await verifyFieldsBatched(verifyQueue)
   }
   // 整批下发（写 + 回读校验）全部结束，最后统一退出工厂模式一次 —— 全程只进/退一次。
   if (autoFactory.value) await exitFactory()
@@ -2016,16 +1640,28 @@ function injectFullChargeMirror(fields: FieldState[]): FieldState[] {
   return [...fields, full]
 }
 
+/** 「全部写入 / 强制下发」的字段筛选口径：有寄存器、可写、非位开关（位图走分组下发）、
+ *  非密码字段（避免批量中途反复弹密码框），且值非空（与单字段 canWrite 同口径——
+ *  值为 null 时按 0 下发会写出无效数据，如清空后的生产日期变成 0x0000）。
+ *  生产日期（customDisplay='date'）的 f.value 即寄存器 raw，走普通数值分支下发，
+ *  必须包含——此前被 !customDisplay 一刀切排除，导致日期永远不随批量下发。 */
+function canBatchDispatch(f: FieldState): boolean {
+  if (f.customDisplay && f.customDisplay !== 'date') return false
+  if (f.readOnly) return false
+  if (isBitSwitch(f)) return false
+  if (f.index === undefined) return false
+  if (f.needPassword) return false
+  return f.value !== null && f.value !== undefined
+}
+
 async function writeAll() {
   if (!ensureDispatchAllowed()) return
   // 导入模板后无需手动修改：把已导入模板涉及的字段重新标记为待下发，
   // 这样「全部写入」在连接状态下始终可点，并能把模板值原样重发一遍（不依赖脏标记）。
   if (importedParams.value.length) markImportedDirty()
   if (!dirtyCount.value) { ElMessage.warning('暂无可下发的参数（请先导入模板或修改参数）'); return }
-  // 只下发可写字段；位图字段共享同一寄存器需合并
-  const dirty = allFields.value.filter(
-    (f) => f.dirty && !f.customDisplay && !f.readOnly && !isBitSwitch(f) && f.index !== undefined && !f.needPassword,
-  )
+  // 只下发可写字段（含生产日期）；位图字段共享同一寄存器需合并
+  const dirty = allFields.value.filter((f) => f.dirty && canBatchDispatch(f))
   if (!dirty.length) return
   await sendFields(injectFullChargeMirror(dirty))
 }
@@ -2034,9 +1670,7 @@ async function writeAll() {
 // 适用于「读出来后又想原样写回一遍」的场景（如参数被设备意外清零、或对照核验）。
 async function forceWriteAll() {
   if (!ensureDispatchAllowed()) return
-  const fields = allFields.value.filter(
-    (f) => !f.customDisplay && !f.readOnly && !isBitSwitch(f) && f.index !== undefined && !f.needPassword,
-  )
+  const fields = allFields.value.filter(canBatchDispatch)
   if (!fields.length) { ElMessage.warning('暂无可下发的参数（请先读取设备参数）'); return }
   try {
     await ElMessageBox.confirm(
@@ -2071,7 +1705,7 @@ async function writeGroupBitmap(g: { title: string; fields: FieldState[] }, bitI
   // 未读取过则先读取
   if (bitmaps.value[bitIndex] === null || bitmaps.value[bitIndex] === undefined) {
     jbdBus.send(buildReadParam(bitIndex, 1))
-    const resp = await jbdBus.onceResponse(1500, 0xfa)
+    const resp = await jbdBus.onceResponse(FRAME_TIMEOUT_MS, 0xfa)
     const raw = parseParamResponse(resp)
     if (raw === null) { ElMessage.error(`读取位图[${bitIndex}]失败`); return }
     bitmaps.value[bitIndex] = raw
@@ -2206,6 +1840,9 @@ function isSendDiff(p: ImportedParam): boolean {
 async function sendAllImported() {
   if (!ensureDispatchAllowed()) return
   if (!importedParams.value.length) return
+  // 批量操作接管总线：自增世代使单写下发遗留的后台回读校验（verifyField）静默退出，
+  // 避免其 0xFA 读取与导入下发的帧互抢（与「读取全部/全部写入」同策略）
+  busEpoch++
   busy.value = true
   let ok = 0, fail = 0
   if (autoFactory.value && !inFactory.value) {

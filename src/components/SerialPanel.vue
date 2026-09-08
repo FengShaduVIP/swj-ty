@@ -78,7 +78,7 @@
               type="primary"
               :icon="Link"
               :disabled="!selectedPort"
-              :loading="connecting"
+              :loading="ui.conn === 'connecting'"
               @click="doConnect"
               style="width: 100%"
             >
@@ -115,18 +115,11 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
 import { Setting, Link, SwitchButton } from '@element-plus/icons-vue'
 import DataLog from './DataLog.vue'
 import ConnIndicator from './ConnIndicator.vue'
 import StatusBadge from './StatusBadge.vue'
-import { ui } from '@/store'
-
-interface LogEntry {
-  time: string
-  type: 'send' | 'recv' | 'error' | 'info'
-  content: string
-}
+import { ui, type LogEntry } from '@/store'
 
 const props = withDefaults(defineProps<{
   connected: boolean
@@ -151,7 +144,8 @@ const baudRate = ref(9600)
 const dataBits = ref<5 | 6 | 7 | 8>(8)
 const stopBits = ref<1 | 1.5 | 2>(1)
 const parity = ref<'none' | 'even' | 'odd' | 'mark' | 'space'>('none')
-const connecting = ref(false)
+// 连接进行中的 loading 直接跟随全局连接状态（emit 不被父级 await，
+// 本地 loading 会在父级真正连接完成前就被复位，表现为按钮一闪而过）
 
 const baudRates = [300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 56000, 57600, 115200, 128000, 256000]
 
@@ -174,19 +168,14 @@ const metaRows = computed(() => {
 
 function refreshPorts() { emit('refresh') }
 
-async function doConnect() {
-  connecting.value = true
-  try {
-    emit('connect', {
-      path: selectedPort.value,
-      baudRate: baudRate.value,
-      dataBits: dataBits.value,
-      stopBits: stopBits.value,
-      parity: parity.value,
-    })
-  } finally {
-    connecting.value = false
-  }
+function doConnect() {
+  emit('connect', {
+    path: selectedPort.value,
+    baudRate: baudRate.value,
+    dataBits: dataBits.value,
+    stopBits: stopBits.value,
+    parity: parity.value,
+  })
 }
 function doDisconnect() { emit('disconnect') }
 

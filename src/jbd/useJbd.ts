@@ -2,8 +2,8 @@ import { ref, computed, watch, effectScope } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   buildReadBasicInfo, buildReadCellVoltages, buildReadHardwareVersion,
-  buildReadProtectCounts, buildReadChipType, buildReadInternalRes,
-  parseBasicInfo, parseCellVoltages, parseHardwareVersion, parseProtectCounts, parseInternalRes,
+  buildReadProtectCounts, buildReadChipType,
+  parseBasicInfo, parseCellVoltages, parseHardwareVersion, parseProtectCounts,
   PROTECT_BIT, ALARM_BIT, type BasicInfo, type Frame,
 } from '@/jbd/jbd-protocol'
 import { jbdBus } from '@/jbd/jbd-bus'
@@ -18,7 +18,6 @@ const connected = computed(() => ui.conn === 'connected')
 
 const basicInfo = ref<BasicInfo | null>(null)
 const cellVoltages = ref<number[]>([])
-const internalRes = ref<number[]>([])
 const hwVersion = ref('')
 const protectCounts = ref<Record<string, number>>({})
 const chipType = ref<number | null>(null)
@@ -30,13 +29,10 @@ const chipTypeName = computed(() => {
 const ackHistory = ref<string[]>([])
 const autoPollProxy = ref(false)
 
-// ===== 趋势历史 =====
-const MAX_HISTORY = 600
-const history = ref<Sample[]>([])
-const recordTrend = ref(true)
-const trendMetric = ref<'overview' | 'pack' | 'cells' | 'temps'>('overview')
-
-interface Sample { t: number; total: number; current: number; cells: number[]; temps: number[]; minC: number; maxC: number; diffC: number }
+// ===== 批量参数操作期间暂停自动轮询 =====
+// 参数配置页的批量读/写共用此状态：避免轮询帧与批量帧交错排队，
+// 拉长批量耗时并推高批量帧排队超时的概率。
+const batchBusy = ref(false)
 
 // ===== 派生 =====
 const cellMax = computed(() => (cellVoltages.value.length ? Math.max(...cellVoltages.value) : 0))
@@ -128,7 +124,7 @@ function readProtect() { send(buildReadProtectCounts()) }
 // 芯片类型决定二级过流/短路保护下拉框的档位物理量，必须可靠读到。
 // 嘉百达等设备在串口刚打开后首帧常被丢弃，且连接初期发送器未必就绪
 // （jbdBus.setConnected(true) 由主进程 onStatusChange 异步触发，晚于 ui.conn 置位），
-// 故读取失败需补发重试（与 startVerify 同源策略），避免首帧/竞态丢帧导致
+// 故读取失败需补发重试（与 initAfterConnect 同源策略），避免首帧/竞态丢帧导致
 // 下拉框始终拿不到芯片方案而误显示 0A。
 async function readChip() {
   if (!connected.value) return
@@ -139,12 +135,11 @@ async function readChip() {
     await new Promise((r) => setTimeout(r, 400))
   }
 }
-function readRes() { send(buildReadInternalRes()) }
 
 let pollTimer: number | null = null
 function startPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-  if (connected.value && autoPollProxy.value) {
+  if (connected.value && autoPollProxy.value && !batchBusy.value) {
     pollTimer = window.setInterval(() => {
       pollSend(buildReadBasicInfo()); pollSend(buildReadCellVoltages())
     }, POLL_INTERVAL_MS)
@@ -155,62 +150,56 @@ function onPollChange(v: boolean) {
   startPoll()
 }
 
-function recordSample() {
-  if (!recordTrend.value || !basicInfo.value) return
-  pushSample()
-  const cells = cellVoltages.value
-  history.value.push({
-    t: Date.now(),
-    total: basicInfo.value.totalVoltage_mV / 1000,
-    current: basicInfo.value.current_mA / 1000,
-    cells: [...cells],
-    temps: [...basicInfo.value.temperatures_C],
-    minC: cells.length ? Math.min(...cells) / 1000 : 0,
-    maxC: cells.length ? Math.max(...cells) / 1000 : 0,
-    diffC: cells.length ? (Math.max(...cells) - Math.min(...cells)) / 1000 : 0,
-  })
-  if (history.value.length > MAX_HISTORY) history.value = history.value.slice(-MAX_HISTORY)
-}
-function clearTrend() { history.value = [] }
-
-// 数据色板（仅 data-* 命名空间，DESIGN 2.6）
-const C = { voltage: '#2DD4E8', current: '#A78BFA', temp: '#FF8A5B', soc: '#34D399', delta: '#F472B6' }
-const trendSeries = computed(() => {
-  const h = history.value
-  if (!h.length) return []
-  switch (trendMetric.value) {
-    case 'overview':
-      return [
-        { name: '总压(V)', color: C.voltage, data: h.map((s) => s.total) },
-        { name: '电流(A)', color: C.current, data: h.map((s) => s.current) },
-        { name: '温度(℃)', color: C.temp, data: h.map((s) => s.maxC) },
-        { name: 'SOC(%)', color: C.soc, data: h.map((s) => basicInfo.value?.rsoc ?? 0) },
-      ]
-    case 'pack':
-      return [
-        { name: '总压(V)', color: C.voltage, data: h.map((s) => s.total) },
-        { name: '电流(A)', color: C.current, data: h.map((s) => s.current) },
-      ]
-    case 'cells': {
-      const n = h[0].cells.length
-      return Array.from({ length: n }, (_, i) => ({
-        name: `C${i + 1}`,
-        color: C.voltage,
-        data: h.map((s) => (s.cells[i] ? s.cells[i] / 1000 : 0)),
-      }))
-    }
-    case 'temps': {
-      const n = h[0].temps.length
-      return Array.from({ length: n }, (_, i) => ({
-        name: `NTC${i + 1}`,
-        color: C.temp,
-        data: h.map((s) => s.temps[i] ?? 0),
-      }))
-    }
+// 批量参数操作期间暂停自动轮询；结束后恢复
+watch(batchBusy, (busy) => {
+  if (busy) {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  } else {
+    startPoll()
   }
-  return []
 })
-const trendUnit = computed(() => (trendMetric.value === 'overview' ? 'V / A / ℃ / %' : trendMetric.value === 'pack' ? 'V / A' : trendMetric.value === 'temps' ? '℃' : 'V'))
+
+// 链路熔断联动：连续多次无应答时暂停自动轮询（错误日志/toast 不再刷屏），
+// 收到任意有效应答即自动恢复轮询。暂停期间 JbdPanel 的 5s 保护事件读取
+// 仍在发帧，客观上充当链路探针；用户手动读取亦可触发恢复。
+jbdBus.onLinkChange((down) => {
+  if (down) {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+    ElMessage.error('连续多次通信无应答，已暂停自动轮询；通信恢复后将自动继续')
+  } else {
+    startPoll()
+  }
+})
+
+// ===== 连接后统一初始化序列（串行，避免多路并发涌队列）=====
+// 此前连接建立瞬间有三路并发：App.startVerify 3×readBasic、JbdPanel.refreshAll
+// 5 条、useJbd.readChip 3 次重试——同一时刻最多 11 条命令抢串行队列。
+// 统一为：验证链路(读基本信息, 首帧丢弃补发) → 读芯片类型 → 拉取其余遥测。
+let initRunning = false
+async function initAfterConnect(): Promise<void> {
+  if (initRunning) return
+  initRunning = true
+  try {
+    // 1) 链路验证 + 首帧基本信息（sendAck 成功时 handleFrame 已更新 basicInfo，
+    //    App.startVerify 的 watch(basicInfo) 据此判定「连接成功」）
+    for (let i = 0; i < 3; i++) {
+      if (!connected.value) return
+      const f = await jbdBus.sendAck(buildReadBasicInfo())
+      if (!f.timeout && f.valid && f.status === 0x00) break
+      await new Promise((r) => setTimeout(r, 400))
+    }
+    // 2) 芯片类型（若未知；决定二级过流/短路档位物理量）
+    if (chipType.value == null) await readChip()
+    // 3) 其余遥测
+    if (connected.value) {
+      jbdBus.send(buildReadCellVoltages())
+      jbdBus.send(buildReadHardwareVersion())
+      jbdBus.send(buildReadProtectCounts())
+    }
+  } finally {
+    initRunning = false
+  }
+}
 
 // ===== 单例帧分发（仅订阅一次，避免重复处理 / 重复 ack）=====
 function pushAck(text: string) {
@@ -239,13 +228,12 @@ function handleFrame(f: Frame) {
       ui.live.maxTemp_C = bi.temperatures_C.length ? Math.max(...bi.temperatures_C) : null
       ui.live.cellCount = bi.cellCount
       ui.alarmCount = activeProtects.value.length + activeAlarms.value.length
-      recordSample()
+      pushSample()
       break
     }
-    case 0x04: cellVoltages.value = parseCellVoltages(f.data); recordSample(); break
+    case 0x04: cellVoltages.value = parseCellVoltages(f.data); break
     case 0x05: hwVersion.value = parseHardwareVersion(f.data); break
     case 0xaa: protectCounts.value = parseProtectCounts(f.data); break
-    case 0xf6: internalRes.value = parseInternalRes(f.data); break
     // 芯片类型：命令字 0x00 被「读芯片类型」与「进厂指令(写 0x00)」共用。
     // 读响应携带数据字节（1~2 字节，取最后一个为真实类型）；进厂写指令的 ACK 无数据载荷。
     // 因此绝不能以"收到 0x00 帧"来清空 chipType——否则强制下发等进厂动作会把芯片类型误清空，
@@ -259,13 +247,13 @@ function handleFrame(f: Frame) {
 let busSub: (() => void) | null = null
 if (!busSub) busSub = jbdBus.onFrame((f) => handleFrame(f))
 
-// 连接建立且尚未识别芯片方案时，自动读取芯片类型。
+// 连接建立后执行统一初始化序列（含读芯片类型）。
 // 芯片方案决定二级过流/短路保护下拉框的物理量档位，缺它会导致下拉全显示 0.00A 而误导用户。
 // 用 detached effectScope 在模块级建立一次永久 watch，不依赖任何组件生命周期，
 // 从而参数配置页也能可靠拿到芯片类型（不必依赖监控页的 refreshAll 触发）。
 effectScope(true).run(() => {
   watch(connected, (isConnected) => {
-    if (isConnected && chipType.value == null) readChip()
+    if (isConnected) void initAfterConnect()
   })
 })
 
@@ -274,20 +262,18 @@ export function useJbd() {
     // 状态
     connected,
     basicInfo,
-    cellVoltages, internalRes, hwVersion, protectCounts, chipType,
-    ackHistory, autoPollProxy,
-    history, recordTrend, trendMetric,
+    cellVoltages, hwVersion, protectCounts, chipType,
+    ackHistory, autoPollProxy, batchBusy,
     // 派生
     cellMax, cellMin, maxTemp, activeProtects, activeAlarms,
     socStatus, socLabel, tempStatus,
-    protectList, trendSeries, trendUnit, chipTypeName,
+    protectList, chipTypeName,
     // 工具
     fmt, pad, cellClass, isBalancing,
     // 动作
     send, pollSend,
-    readBasic, readCells, readHw, readProtect, readChip, readRes,
+    readBasic, readCells, readHw, readProtect, readChip,
     onPollChange,
     restartPoll: startPoll,
-    recordSample, clearTrend,
   }
 }

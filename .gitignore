@@ -16,3 +16,4 @@ release/
 /dist-bak/
 /.zcode/
 /test-reports/
+/src/components.d.ts

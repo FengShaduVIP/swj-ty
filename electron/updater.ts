@@ -222,6 +222,8 @@ export function initAutoUpdater(): void {
 
   autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
     activeUpdate = { version: info.version, releaseNotes: releaseNotesToString(info.releaseNotes) }
+    // 已下载待安装：停止周期轮询（若启用），避免重复检查触发重复下载
+    if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null }
     emit({ state: 'downloaded', checkedAt: Date.now() })
   })
 

@@ -83,6 +83,12 @@ contextBridge.exposeInMainWorld('dispatchAPI', {
     ipcRenderer.invoke('dispatch:upload', record)
 })
 
+// 暴露参数下发确认密码校验（密码常量留在主进程，渲染层 bundle 不落明文）
+contextBridge.exposeInMainWorld('bmsAPI', {
+  verifyDispatchPwd: (candidate: string): Promise<boolean> =>
+    ipcRenderer.invoke('bms:verifyDispatchPwd', candidate)
+})
+
 // 暴露安全的 API 给渲染进程
 contextBridge.exposeInMainWorld('serialAPI', {
   // 获取串口列表

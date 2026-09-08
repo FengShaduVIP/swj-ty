@@ -21,7 +21,8 @@ export interface DispatchRecord {
 }
 
 const KEY = 'jbd_dispatch_log_v1'
-const MAX = 500
+// 上限 200：每次写入都全量 JSON 序列化 localStorage，条数越多高频下发时卡顿越明显
+const MAX = 200
 
 export function getDispatchRecords(): DispatchRecord[] {
   try {

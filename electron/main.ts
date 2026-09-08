@@ -75,6 +75,14 @@ ipcMain.handle('auth:logout', () => {
   return { ok: true as const }
 })
 
+// ======== 强制下发确认密码 ========
+// 密码常量只存于主进程，渲染层 bundle 不落明文（devtools 源码/产物中不可见）。
+// 注意：这是业务确认口令而非安全边界——能访问 IPC 的代码仍可调用本句柄做穷举比对。
+const DISPATCH_PWD = 'tyln@1688'
+ipcMain.handle('bms:verifyDispatchPwd', (_event, candidate: unknown) => {
+  return typeof candidate === 'string' && candidate === DISPATCH_PWD
+})
+
 // ======== 参数下发记录上传 IPC（accessToken 保持在主进程，渲染进程只传业务数据）========
 ipcMain.handle('dispatch:upload', async (_event, record: unknown) => {
   const session = authSession

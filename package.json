@@ -3,6 +3,13 @@
   "version": "2.3.8",
   "productName": "天一BMS",
   "author": "BaoMihua",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild",
+      "@serialport/bindings-cpp"
+    ]
+  },
   "description": "天一BMS - 锂电池 PACK 上位机监控软件 (JBD BMS) - Electron + Element Plus",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -27,6 +34,7 @@
     "electron": "^33.3.1",
     "electron-builder": "^25.1.8",
     "typescript": "^5.7.3",
+    "unplugin-vue-components": "^32.1.0",
     "vite": "^6.0.11",
     "vite-plugin-electron": "^0.28.8",
     "vite-plugin-electron-renderer": "^0.14.6",

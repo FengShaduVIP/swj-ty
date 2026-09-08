@@ -1,5 +1,8 @@
 /// <reference types="vite/client" />
 
+// 渲染层版本号：由 vite.config.ts 的 define 编译期注入（值为 package.json version）
+declare const __APP_VERSION__: string
+
 declare module '*.vue' {
   import type { DefineComponent } from 'vue'
   const component: DefineComponent<{}, {}, any>
@@ -132,10 +135,17 @@ interface DispatchAPI {
   }) => Promise<DispatchUploadResult>
 }
 
+/** BMS 参数下发相关（注入自 preload.ts） */
+interface BmsAPI {
+  /** 校验强制下发确认密码（常量存放于主进程，渲染层 bundle 不落明文） */
+  verifyDispatchPwd: (candidate: string) => Promise<boolean>
+}
+
 interface Window {
   serialAPI: SerialAPI
   updaterAPI: UpdaterAPI
   shellAPI: ShellAPI
   authAPI: BackendAuthAPI
   dispatchAPI: DispatchAPI
+  bmsAPI: BmsAPI
 }

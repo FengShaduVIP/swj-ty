@@ -294,12 +294,11 @@ const now = new Date()
 let mountedAt = ''
 mountedAt = now.toLocaleTimeString('zh-CN', { hour12: false })
 // 连接状态变化时：
-//  - 恢复连接：立刻拉一帧（连接建立那一刻），并交由 useJbd 的 pollTimer 接管后续 2s 轮询；
+//  - 恢复连接：交由 useJbd 的 pollTimer 接管后续 2s 轮询（初始全量读取已由
+//    useJbd.initAfterConnect 统一串行执行，不再各自抢发导致队列拥挤）；
 //  - 断开：停止轮询（restartPoll 在断开态下会自动清空定时器）。
-// 注意：不再使用常驻 1.5s interval，避免与 useJbd 自动轮询双重下发、总线拥挤。
 watch(connected, (v) => {
   if (v) {
-    refreshAll()
     j.restartPoll()
     scheduleProtectRead()
   } else {

@@ -25,6 +25,8 @@ const TIMEOUT_FRAME = (): TimeoutFrame => ({
 
 /** 发送队列深度上限：超出则丢弃新帧（避免断线/无应答时队列无限堆积） */
 const QUEUE_CAP = 32
+/** 连续超时达到该次数即判定链路疑似断开（通知订阅者暂停轮询等降速动作） */
+const LINK_FAIL_THRESHOLD = 5
 /** 单帧等待应答的默认超时（ms） */
 // 单帧请求-响应超时统一使用 constants.FRAME_TIMEOUT_MS
 
@@ -47,6 +49,11 @@ class JbdBus {
   // ===== 命令串行化队列（方案1：单条在途锁）=====
   private outQueue: QueueJob[] = []
   private busy = false
+
+  // ===== 链路健康判定（连续超时熔断）=====
+  private consecutiveFails = 0
+  private linkDown = false
+  private linkListeners = new Set<(down: boolean) => void>()
 
   constructor() {
     this.session = new JbdSession((f) => this.dispatch(f))
@@ -82,6 +89,38 @@ class JbdBus {
   /** App 通知底层串口连接状态，用于断线时立即释放发送队列 */
   setConnected(ready: boolean): void {
     this.senderReady = ready
+    if (!ready) {
+      // 底层串口断开：复位链路判定，避免重连后残留「断链」状态
+      this.consecutiveFails = 0
+      if (this.linkDown) {
+        this.linkDown = false
+        this.linkListeners.forEach((l) => l(false))
+      }
+    }
+  }
+
+  /** 订阅链路健康状态变化（连续超时判定断链 / 收到应答恢复），返回取消函数 */
+  onLinkChange(cb: (down: boolean) => void): () => void {
+    this.linkListeners.add(cb)
+    return () => { this.linkListeners.delete(cb) }
+  }
+
+  /** 超时计数 +1；达到阈值进入断链态并通知（仅通知一次，恢复时再通知） */
+  private noteFail(): void {
+    this.consecutiveFails++
+    if (!this.linkDown && this.consecutiveFails >= LINK_FAIL_THRESHOLD) {
+      this.linkDown = true
+      this.linkListeners.forEach((l) => l(true))
+    }
+  }
+
+  /** 收到有效应答：清零计数；若此前处于断链态则通知恢复 */
+  private noteSuccess(): void {
+    this.consecutiveFails = 0
+    if (this.linkDown) {
+      this.linkDown = false
+      this.linkListeners.forEach((l) => l(false))
+    }
   }
 
   // ===== 串行队列实现 =====
@@ -116,6 +155,7 @@ class JbdBus {
       clearTimeout(timer)
       this.removeResolver(wrapped)
       this.busy = false
+      this.noteSuccess()
       job.resolve(f)
       this.pump()
     }
@@ -124,6 +164,7 @@ class JbdBus {
       settled = true
       this.removeResolver(wrapped)
       this.busy = false
+      this.noteFail()
       job.resolve(TIMEOUT_FRAME())
       this.pump()
     }, job.timeoutMs)
