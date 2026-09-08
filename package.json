@@ -1,6 +1,6 @@
 {
   "name": "serial-modbus-tool",
-  "version": "2.3.8",
+  "version": "2.3.9",
   "productName": "天一BMS",
   "author": "BaoMihua",
   "pnpm": {
