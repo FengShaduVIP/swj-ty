@@ -101,6 +101,9 @@
           告警 {{ ui.alarmCount }}
         </button>
         <span class="sb-rate">采样 <b class="num">{{ rate }}</b> Hz</span>
+        <button class="sb-icon" title="浮动窗口" @click="openFloatWindow">
+          <el-icon :size="16"><Monitor /></el-icon>
+        </button>
         <button class="sb-icon" title="检查更新" :disabled="updating" @click="onCheckUpdate">
           <el-icon :size="16" :class="{ 'spin': updating }"><Refresh /></el-icon>
         </button>
@@ -171,6 +174,7 @@
           />
           <JbdPanel v-show="active === 'monitor'" :connected="connected" />
           <JbdParamConfig
+            ref="paramConfigRef"
             v-show="active === 'config'"
             :connected="connected"
             :logs="dataLogs"
@@ -316,7 +320,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, markRaw } from 
 import { ElMessage } from 'element-plus'
 // 全局中文语言包：el-date-picker 等组件的弹层以中文呈现（英文 locale 会显示月份英文缩写）
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { Connection, DataBoard, Setting, Fold, Expand, Operation, Refresh, Tickets } from '@element-plus/icons-vue'
+import { Connection, DataBoard, Setting, Fold, Expand, Operation, Refresh, Tickets, Monitor } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
 import JbdPanel from './components/JbdPanel.vue'
 import JbdParamConfig from './components/JbdParamConfig.vue'
@@ -361,6 +365,11 @@ async function onCheckUpdate() {
 // 在系统默认浏览器打开 Gitee 发行版（国内镜像手动下载入口）
 function openGitee() {
   window.shellAPI?.openExternal('https://gitee.com/tianip/swj-ty/releases')
+}
+
+// 打开置顶浮动小窗（主窗口最小化后仍实时显示电池数据；重复点击置前）
+function openFloatWindow() {
+  void window.floatAPI.open()
 }
 
 // ===== 导航视图定义（按协议动态切换）=====
@@ -499,12 +508,17 @@ async function logoutBackend() {
 
 const dataLogs = ref<LogEntry[]>([])
 let logSeq = 0
+// 参数配置页引用：浮窗「强制下发」经主进程转发后由 App 调用其 forceWriteAll
+const paramConfigRef = ref<InstanceType<typeof JbdParamConfig> | null>(null)
 
 function addLog(type: LogEntry['type'], content: string) {
   const now = new Date()
   const time = now.toLocaleTimeString('zh-CN', { hour12: false }) +
     '.' + now.getMilliseconds().toString().padStart(3, '0')
-  dataLogs.value.push({ id: ++logSeq, time, type, content })
+  const entry: LogEntry = { id: ++logSeq, time, type, content }
+  dataLogs.value.push(entry)
+  // 同步给浮动窗口的两行滚动日志条（浮窗不存在时主进程直接丢弃）
+  window.floatAPI?.pushLog(entry)
   // 用 splice 原地裁剪而非 slice 重建数组：配合 DataLog 的 id key，
   // 旧条目 DOM 因 key 不变而复用，避免高频日志下 500 行全量重渲
   const excess = dataLogs.value.length - LOG_MAX_LINES
@@ -730,6 +744,12 @@ onMounted(() => {
   })
   window.serialAPI?.onStatusChange?.((status: SerialStatus) => {
     handleStatusChange(status)
+  })
+
+  // 浮窗「强制下发」按钮 → 主进程唤醒本窗口 → 转交参数配置页执行完整下发流程
+  window.floatAPI?.onForceWrite(() => {
+    active.value = 'config'
+    void paramConfigRef.value?.forceWriteAll()
   })
 
   // 按持久化的配置启动自动连接（若启用），在监听器就绪后再开启

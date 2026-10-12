@@ -141,6 +141,37 @@ interface BmsAPI {
   verifyDispatchPwd: (candidate: string) => Promise<boolean>
 }
 
+/** 浮动窗口控制（注入自 preload.ts） */
+interface FloatLogEntry {
+  id: number
+  time: string
+  type: string
+  content: string
+}
+
+interface FloatAPI {
+  /** 打开浮窗（已存在则置前） */
+  open: () => Promise<{ success: boolean }>
+  /** 关闭浮窗（仅浮窗自身关闭按钮调用） */
+  close: () => Promise<{ success: boolean }>
+  /** 显示并聚焦主窗口 */
+  showMain: () => Promise<{ success: boolean }>
+  /** 切换浮窗置顶 */
+  setAlwaysOnTop: (enabled: boolean) => Promise<{ success: boolean }>
+  /** 请求主窗口执行强制下发（参数状态与确认框都在主窗口） */
+  requestForceWrite: () => Promise<{ success: boolean }>
+  /** 主窗口：addLog 后把日志条目逐条同步给浮窗 */
+  pushLog: (entry: FloatLogEntry) => void
+  /** 主窗口：当前导入模板名变化时同步给浮窗 */
+  pushTemplate: (name: string) => void
+  /** 主窗口：监听浮窗发来的强制下发请求 */
+  onForceWrite: (callback: () => void) => void
+  /** 浮窗：监听主窗口转发来的通讯日志 */
+  onLog: (callback: (entry: FloatLogEntry) => void) => void
+  /** 浮窗：监听主窗口推送的当前模板名 */
+  onTemplate: (callback: (name: string) => void) => void
+}
+
 interface Window {
   serialAPI: SerialAPI
   updaterAPI: UpdaterAPI
@@ -148,4 +179,5 @@ interface Window {
   authAPI: BackendAuthAPI
   dispatchAPI: DispatchAPI
   bmsAPI: BmsAPI
+  floatAPI: FloatAPI
 }

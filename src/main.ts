@@ -6,9 +6,13 @@ import 'element-plus/es/components/message-box/style/css'
 // 暗色主题变量（保持原有全量引入时代的暗色表现）
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import App from './App.vue'
+import FloatWindow from './components/FloatWindow.vue'
 import './design-tokens.css'
 import './element-theme.css'
 import './style.css'
 
-const app = createApp(App)
+// 浮动窗口复用同一 bundle：主进程以 #float hash 加载本入口，
+// 此处据此挂载精简浮窗组件而非完整应用
+const isFloat = window.location.hash.includes('float')
+const app = createApp(isFloat ? FloatWindow : App)
 app.mount('#app')

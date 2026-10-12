@@ -339,7 +339,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive } from 'vue'
+import { ref, computed, reactive, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Setting, Refresh, Upload, FolderOpened, Download, Files, Promotion, Rank, Operation, RefreshLeft, Delete, Edit, Search, ArrowDown, ArrowRight, Document, Close } from '@element-plus/icons-vue'
 import { jbdBus } from '@/jbd/jbd-bus'
@@ -423,6 +423,11 @@ const importedParams = ref<ImportedParam[]>([])
 const importDialogVisible = ref(false)
 // 当前已导入的来源名称（模板名或文件名），用于在主页面上提示用户选的是哪个
 const importedSourceName = ref<string>('')
+
+// 模板名同步给浮动窗口显示（浮窗被动显示，状态由主窗口中转）
+watch(importedSourceName, (name) => {
+  window.floatAPI?.pushTemplate(name)
+})
 
 // ====== 本地配置模板（localStorage）：列表/存/删/导入（见 param-config/useTemplates.ts） ======
 // 依赖的页面级回调（applyImport/onFileChange/buildExportData 均为函数声明，存在提升）
@@ -1954,6 +1959,10 @@ function exportConfig() {
   URL.revokeObjectURL(url)
   ElMessage.success(`已导出 ${data.params.length} 个参数`)
 }
+
+// 暴露给父组件：浮动窗口的「强制下发」按钮经 App.vue 转发调用，
+// 复用本页完整流程（权限校验 → 确认框 → 进厂批量下发 → 本地记录 → 后台上传）
+defineExpose({ forceWriteAll })
 </script>
 
 <style scoped>

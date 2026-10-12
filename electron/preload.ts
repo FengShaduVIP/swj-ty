@@ -177,6 +177,54 @@ contextBridge.exposeInMainWorld('shellAPI', {
     ipcRenderer.invoke('app:openExternal', url)
 })
 
+// 暴露浮动窗口控制能力（窗口的创建/销毁在主进程管理）
+contextBridge.exposeInMainWorld('floatAPI', {
+  /** 打开浮窗（已存在则置前） */
+  open: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('float:open'),
+
+  /** 关闭浮窗（仅浮窗自身关闭按钮调用） */
+  close: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('float:close'),
+
+  /** 显示并聚焦主窗口（浮窗"回到主界面"按钮） */
+  showMain: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('float:showMain'),
+
+  /** 切换浮窗置顶 */
+  setAlwaysOnTop: (enabled: boolean): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('float:setAlwaysOnTop', enabled),
+
+  /** 请求主窗口执行强制下发（参数状态与确认框都在主窗口） */
+  requestForceWrite: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('float:requestForceWrite'),
+
+  /** 主窗口：addLog 后把日志条目逐条同步给浮窗（浮窗不存在时主进程丢弃） */
+  pushLog: (entry: { id: number; time: string; type: string; content: string }): void => {
+    ipcRenderer.send('float:pushLog', entry)
+  },
+
+  /** 主窗口：当前导入模板名变化时同步给浮窗 */
+  pushTemplate: (name: string): void => {
+    ipcRenderer.send('float:pushTemplate', name)
+  },
+
+  /** 主窗口：监听浮窗发来的强制下发请求 */
+  onForceWrite: (callback: () => void) => {
+    ipcRenderer.on('float:forceWrite', () => callback())
+  },
+
+  /** 浮窗：监听主窗口转发来的通讯日志 */
+  onLog: (callback: (entry: { id: number; time: string; type: string; content: string }) => void) => {
+    ipcRenderer.on('float:log', (_event, entry) => callback(entry))
+  },
+
+  /** 浮窗：监听主窗口推送的当前模板名 */
+  onTemplate: (callback: (name: string) => void) => {
+    ipcRenderer.on('float:template', (_event, name: string) => callback(name))
+  }
+})
+
 // === 类型定义 ===
 
 export interface SerialPortInfo {

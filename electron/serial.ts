@@ -30,6 +30,18 @@ export class SerialManager {
   private autoManaged = false
   /** 正在尝试自动连接，避免轮询周期内重复触发 connect */
   private autoConnecting = false
+  /** 用户手动断开后置位：暂停自动重连，直到下次手动连接（否则断开 1.5s 内被守护抢连，按钮形同虚设） */
+  private manualOverride = false
+
+  /** 标记最近一次断开为用户手动操作（任何窗口的断开按钮） */
+  setManualOverride() {
+    this.manualOverride = true
+  }
+
+  /** 清除手动标记（任何窗口的连接按钮） */
+  clearManualOverride() {
+    this.manualOverride = false
+  }
 
   /** 列出所有可用串口 */
   async listPorts() {
@@ -204,6 +216,8 @@ export class SerialManager {
   /** 轮询扫描：发现目标设备则自动连接；目标消失且为自动连接则断开（支持插拔重连） */
   private async autoTick(): Promise<void> {
     if (!this.autoConfig || this.autoConnecting) return
+    // 用户手动断开后不自动重连，等待手动连接
+    if (this.manualOverride) return
     const cfg = this.autoConfig
     // 没有任何匹配条件时不盲目连接
     if (!cfg.vendorId && !cfg.productId && !cfg.friendlyName) return
