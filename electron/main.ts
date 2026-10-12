@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, screen, shell } from 'electron'
 import { join } from 'path'
 import { SerialManager, type AutoConnectConfig } from './serial'
 import { initAutoUpdater } from './updater'
@@ -51,9 +51,9 @@ function createFloatWindow() {
 
   floatWindow = new BrowserWindow({
     width: 900,
-    height: 132,
+    height: 168,
     minWidth: 840,
-    minHeight: 104,
+    minHeight: 140,
     frame: false,
     resizable: true,
     alwaysOnTop: true,
@@ -74,9 +74,10 @@ function createFloatWindow() {
     floatWindow.loadFile(join(__dirname, '../dist/index.html'), { hash: 'float' })
   }
 
-  // 浮窗打开时补发最近一次模板名（模板名由主窗口增量推送并在此缓存）
+  // 浮窗打开时补发最近一次模板名与蓝牙名称/BMS编码值（由主窗口推送并在此缓存）
   floatWindow.webContents.on('did-finish-load', () => {
     floatWindow!.webContents.send('float:template', floatTemplateName)
+    floatWindow!.webContents.send('float:values', floatFieldValues)
   })
 
   floatWindow.on('closed', () => {
@@ -270,6 +271,19 @@ ipcMain.on('float:pushTemplate', (_event, name: unknown) => {
   }
 })
 
+// 主窗口 → 浮窗：当前蓝牙名称/BMS编码值（读取设备或导入模板后推送，缓存 + 补发）
+let floatFieldValues: { btName: string; bmsCode: string } = { btName: '', bmsCode: '' }
+ipcMain.on('float:pushValues', (_event, v: unknown) => {
+  const val = v as { btName?: unknown; bmsCode?: unknown } | null
+  floatFieldValues = {
+    btName: typeof val?.btName === 'string' ? val.btName : '',
+    bmsCode: typeof val?.bmsCode === 'string' ? val.bmsCode : '',
+  }
+  if (floatWindow && !floatWindow.isDestroyed()) {
+    floatWindow.webContents.send('float:values', floatFieldValues)
+  }
+})
+
 // 浮窗的连接/断开由浮窗直接调用 serial:connect / serial:disconnect（主进程串口管理器统一治理），
 // 不再经主窗口中转；此处仅保留需要主窗口状态的强制下发请求。
 
@@ -284,6 +298,91 @@ ipcMain.handle('float:requestForceWrite', () => {
     return { success: true }
   }
   return { success: false }
+})
+
+// 浮窗 → 主窗口：单参数下发（蓝牙名称/BMS编码，可携带浮窗输入框的值）与复位 MCU 请求。
+// 字段写入、登录态校验与确认框都在主窗口，浮窗仅遥控：唤醒主窗口后转发动作与值
+ipcMain.on('float:paramAction', (_event, payload: unknown) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    const p = (payload ?? {}) as { action?: unknown; value?: unknown }
+    mainWindow.webContents.send('float:paramAction', {
+      action: typeof p.action === 'string' ? p.action : '',
+      value: typeof p.value === 'string' ? p.value : undefined,
+    })
+  }
+})
+
+// ======== 屏幕级通知窗（右上角、置顶所有窗口、不自动关闭） ========
+// DOM 通知（ElNotification）只能存在于某个窗口内部；此通知窗独立于主窗/浮窗，
+// 固定在主屏工作区右上角，点击关闭按钮才消失，且创建/显示均不抢焦点。
+let notifyWindow: BrowserWindow | null = null
+let pendingNotify: { title: string; message: string; type: string } | null = null
+
+const NOTIFY_W = 380
+const NOTIFY_H = 104
+
+function createNotifyWindow() {
+  const { workArea } = screen.getPrimaryDisplay()
+  notifyWindow = new BrowserWindow({
+    width: NOTIFY_W,
+    height: NOTIFY_H,
+    x: workArea.x + workArea.width - NOTIFY_W - 12,
+    y: workArea.y + 12,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    skipTaskbar: true,
+    focusable: false,
+    hasShadow: false,
+    roundedCorners: false,
+    show: false,
+    webPreferences: {
+      preload: join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true
+    }
+  })
+  // screen-saver 层级：盖过浮窗（floating）与其他应用窗口
+  notifyWindow.setAlwaysOnTop(true, 'screen-saver')
+
+  if (process.env.VITE_DEV_SERVER_URL) {
+    notifyWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}#notify`)
+  } else {
+    notifyWindow.loadFile(join(__dirname, '../dist/index.html'), { hash: 'notify' })
+  }
+
+  notifyWindow.webContents.on('did-finish-load', () => {
+    if (pendingNotify) notifyWindow!.webContents.send('notify:data', pendingNotify)
+    notifyWindow!.showInactive()
+  })
+  notifyWindow.on('closed', () => {
+    notifyWindow = null
+  })
+}
+
+ipcMain.on('notify:show', (_event, raw: unknown) => {
+  const p = (raw ?? {}) as { title?: unknown; message?: unknown; type?: unknown }
+  pendingNotify = {
+    title: typeof p.title === 'string' ? p.title : '通知',
+    message: typeof p.message === 'string' ? p.message : '',
+    type: p.type === 'warning' ? 'warning' : 'success',
+  }
+  if (notifyWindow && !notifyWindow.isDestroyed()) {
+    notifyWindow.webContents.send('notify:data', pendingNotify)
+    notifyWindow.showInactive()
+  } else {
+    createNotifyWindow() // did-finish-load 后发送内容并显示
+  }
+})
+
+ipcMain.on('notify:close', () => {
+  if (notifyWindow && !notifyWindow.isDestroyed()) {
+    notifyWindow.close()
+  }
 })
 
 // 9. 在系统默认浏览器中打开外部链接（如 Gitee 手动下载页）

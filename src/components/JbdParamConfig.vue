@@ -1691,7 +1691,15 @@ async function forceWriteAll() {
   // 同时页面模板参数值保持不变，支持用同一套参数反复下发多组电池。
   j.chipType.value = null
   await j.readChip()
-  await sendFields(injectFullChargeMirror(fields))
+  const outcome = await sendFields(injectFullChargeMirror(fields))
+  // 完成通知走屏幕级通知窗（独立置顶小窗，固定屏幕右上角，不自动关闭、须手动关闭）
+  if (outcome.ok + outcome.fail > 0) {
+    window.notifyAPI?.show({
+      title: '强制下发完成',
+      message: `共 ${outcome.ok + outcome.fail} 项参数：成功 ${outcome.ok}，失败 ${outcome.fail}。`,
+      type: outcome.fail ? 'warning' : 'success',
+    })
+  }
   // 落地：把本次强制下发的参数快照写入本地记录库（时间 + 蓝牙名称 + 具体参数）
   const btField = fields.find((f) => f.key === 'bt-name')
   const btName = btField && btField.value != null ? String(btField.value) : '—'
@@ -1703,6 +1711,35 @@ async function forceWriteAll() {
   addDispatchRecord({ btName, params })
   ElMessage.info('已记录本次强制下发到本地历史')
 }
+
+// 单字段下发（浮窗遥控复用）：蓝牙名称走 0xA2 专用指令、BMS 编码信息走 ASCII 多寄存器写，
+// 进厂模式/回读校验统一由 sendFields 承担。value 传入时先写入页面字段（浮窗输入框的值），
+// 未传则取页面当前值；两者都要求字段先经过读取或模板导入（字段结构存在）。
+async function dispatchSingleField(key: string, label: string, value?: string): Promise<void> {
+  if (!ensureDispatchAllowed()) return
+  const f = allFields.value.find((x) => x.key === key)
+  if (!f) { ElMessage.warning(`未找到「${label}」字段`); return }
+  const v = (value !== undefined ? value : (f.value == null ? '' : String(f.value))).trim()
+  if (!v) { ElMessage.warning(`暂无${label}，请在浮窗输入或先读取设备参数`); return }
+  if (f.ascii_len && v.length > f.ascii_len) { ElMessage.warning(`${label}最长 ${f.ascii_len} 个字符`); return }
+  if (value !== undefined) f.value = value.trim()
+  await sendFields([f])
+}
+function dispatchBtName(value?: string) { return dispatchSingleField('bt-name', '蓝牙名称', value) }
+function dispatchBmsCode(value?: string) { return dispatchSingleField('bms-ver', 'BMS编码信息', value) }
+
+// 当前蓝牙名称/BMS编码值变化时推送给浮窗输入框显示（浮窗输入框聚焦时不覆盖，避免打断输入）
+const btNameValue = computed(() => {
+  const f = allFields.value.find((x) => x.key === 'bt-name')
+  return f?.value != null ? String(f.value) : ''
+})
+const bmsCodeValue = computed(() => {
+  const f = allFields.value.find((x) => x.key === 'bms-ver')
+  return f?.value != null ? String(f.value) : ''
+})
+watch([btNameValue, bmsCodeValue], ([bt, code]) => {
+  window.floatAPI?.pushFieldValues({ btName: bt, bmsCode: code })
+})
 
 // ====== 分组位图下发（用于功能设置/温度探头配置） ======
 async function writeGroupBitmap(g: { title: string; fields: FieldState[] }, bitIndex: number) {
@@ -1960,9 +1997,9 @@ function exportConfig() {
   ElMessage.success(`已导出 ${data.params.length} 个参数`)
 }
 
-// 暴露给父组件：浮动窗口的「强制下发」按钮经 App.vue 转发调用，
-// 复用本页完整流程（权限校验 → 确认框 → 进厂批量下发 → 本地记录 → 后台上传）
-defineExpose({ forceWriteAll })
+// 暴露给父组件：浮动窗口的「强制下发 / 蓝牙名称 / BMS编码 / 复位MCU」按钮
+// 经 App.vue 转发调用，复用本页完整流程（权限校验 → 确认框 → 进厂写入 → 记录）
+defineExpose({ forceWriteAll, dispatchBtName, dispatchBmsCode, confirmResetMcu })
 </script>
 
 <style scoped>

@@ -141,6 +141,16 @@ interface BmsAPI {
   verifyDispatchPwd: (candidate: string) => Promise<boolean>
 }
 
+/** 屏幕级通知（注入自 preload.ts）：独立透明置顶小窗，固定屏幕右上角，不自动关闭 */
+interface NotifyAPI {
+  /** 显示通知（替换当前可见通知），须手动关闭 */
+  show: (p: { title: string; message: string; type?: 'success' | 'warning' }) => void
+  /** 关闭当前通知（通知窗上的关闭按钮调用） */
+  close: () => void
+  /** 通知窗：监听主进程发来的通知内容 */
+  onShow: (callback: (p: { title: string; message: string; type: string }) => void) => void
+}
+
 /** 浮动窗口控制（注入自 preload.ts） */
 interface FloatLogEntry {
   id: number
@@ -160,12 +170,20 @@ interface FloatAPI {
   setAlwaysOnTop: (enabled: boolean) => Promise<{ success: boolean }>
   /** 请求主窗口执行强制下发（参数状态与确认框都在主窗口） */
   requestForceWrite: () => Promise<{ success: boolean }>
+  /** 请求主窗口执行单参数下发/复位 MCU（bt-name | bms-code | reset-mcu，value 为浮窗输入框值） */
+  requestParamAction: (action: 'bt-name' | 'bms-code' | 'reset-mcu', value?: string) => void
+  /** 主窗口：蓝牙名称/BMS编码当前值变化时同步给浮窗输入框 */
+  pushFieldValues: (v: { btName: string; bmsCode: string }) => void
   /** 主窗口：addLog 后把日志条目逐条同步给浮窗 */
   pushLog: (entry: FloatLogEntry) => void
   /** 主窗口：当前导入模板名变化时同步给浮窗 */
   pushTemplate: (name: string) => void
   /** 主窗口：监听浮窗发来的强制下发请求 */
   onForceWrite: (callback: () => void) => void
+  /** 主窗口：监听浮窗发来的单参数下发/复位 MCU 请求 */
+  onParamAction: (callback: (action: string, value?: string) => void) => void
+  /** 浮窗：监听主窗口推送的蓝牙名称/BMS编码当前值 */
+  onFieldValues: (callback: (v: { btName: string; bmsCode: string }) => void) => void
   /** 浮窗：监听主窗口转发来的通讯日志 */
   onLog: (callback: (entry: FloatLogEntry) => void) => void
   /** 浮窗：监听主窗口推送的当前模板名 */
@@ -180,4 +198,5 @@ interface Window {
   dispatchAPI: DispatchAPI
   bmsAPI: BmsAPI
   floatAPI: FloatAPI
+  notifyAPI: NotifyAPI
 }

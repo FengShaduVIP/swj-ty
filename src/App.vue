@@ -752,6 +752,16 @@ onMounted(() => {
     void paramConfigRef.value?.forceWriteAll()
   })
 
+  // 浮窗「蓝牙名称 / BMS编码 / 复位MCU」按钮 → 同样转交参数配置页执行（value 为浮窗输入框值）
+  window.floatAPI?.onParamAction((action, value) => {
+    active.value = 'config'
+    const pc = paramConfigRef.value
+    if (!pc) return
+    if (action === 'bt-name') void pc.dispatchBtName(value)
+    else if (action === 'bms-code') void pc.dispatchBmsCode(value)
+    else if (action === 'reset-mcu') void pc.confirmResetMcu()
+  })
+
   // 按持久化的配置启动自动连接（若启用），在监听器就绪后再开启
   applyAutoConnect()
 })

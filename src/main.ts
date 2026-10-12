@@ -7,12 +7,17 @@ import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import App from './App.vue'
 import FloatWindow from './components/FloatWindow.vue'
+import NotifyToast from './components/NotifyToast.vue'
 import './design-tokens.css'
 import './element-theme.css'
 import './style.css'
 
-// 浮动窗口复用同一 bundle：主进程以 #float hash 加载本入口，
-// 此处据此挂载精简浮窗组件而非完整应用
-const isFloat = window.location.hash.includes('float')
-const app = createApp(isFloat ? FloatWindow : App)
+// 同一 bundle 三种形态：主进程以 hash 区分——
+//   #float  置顶浮窗（FloatWindow）
+//   #notify 屏幕级通知窗（NotifyToast，透明置顶右上角）
+//   其余    完整应用（App）
+const hash = window.location.hash
+const isFloat = hash.includes('float')
+const isNotify = !isFloat && hash.includes('notify')
+const app = createApp(isFloat ? FloatWindow : isNotify ? NotifyToast : App)
 app.mount('#app')

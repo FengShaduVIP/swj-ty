@@ -141,6 +141,24 @@ contextBridge.exposeInMainWorld('serialAPI', {
   }
 })
 
+// 暴露屏幕级通知能力（独立透明置顶小窗，固定屏幕右上角，不自动关闭）
+contextBridge.exposeInMainWorld('notifyAPI', {
+  /** 显示通知（替换当前可见通知），须手动关闭 */
+  show: (p: { title: string; message: string; type?: 'success' | 'warning' }): void => {
+    ipcRenderer.send('notify:show', p)
+  },
+
+  /** 关闭当前通知（通知窗上的关闭按钮调用） */
+  close: (): void => {
+    ipcRenderer.send('notify:close')
+  },
+
+  /** 通知窗：监听主进程发来的通知内容 */
+  onShow: (callback: (p: { title: string; message: string; type: string }) => void) => {
+    ipcRenderer.on('notify:data', (_event, p) => callback(p))
+  }
+})
+
 // 暴露自动更新 API 给渲染进程（安全桥接）
 contextBridge.exposeInMainWorld('updaterAPI', {
   /** 立即检查一次更新（手动触发） */
@@ -199,6 +217,16 @@ contextBridge.exposeInMainWorld('floatAPI', {
   requestForceWrite: (): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('float:requestForceWrite'),
 
+  /** 请求主窗口执行单参数下发/复位 MCU（action: bt-name | bms-code | reset-mcu，value 为浮窗输入框值） */
+  requestParamAction: (action: 'bt-name' | 'bms-code' | 'reset-mcu', value?: string): void => {
+    ipcRenderer.send('float:paramAction', { action, value })
+  },
+
+  /** 主窗口：蓝牙名称/BMS编码当前值变化时同步给浮窗输入框 */
+  pushFieldValues: (v: { btName: string; bmsCode: string }): void => {
+    ipcRenderer.send('float:pushValues', v)
+  },
+
   /** 主窗口：addLog 后把日志条目逐条同步给浮窗（浮窗不存在时主进程丢弃） */
   pushLog: (entry: { id: number; time: string; type: string; content: string }): void => {
     ipcRenderer.send('float:pushLog', entry)
@@ -212,6 +240,17 @@ contextBridge.exposeInMainWorld('floatAPI', {
   /** 主窗口：监听浮窗发来的强制下发请求 */
   onForceWrite: (callback: () => void) => {
     ipcRenderer.on('float:forceWrite', () => callback())
+  },
+
+  /** 主窗口：监听浮窗发来的单参数下发/复位 MCU 请求 */
+  onParamAction: (callback: (action: string, value?: string) => void) => {
+    ipcRenderer.on('float:paramAction', (_event, payload: { action: string; value?: string }) =>
+      callback(payload.action, payload.value))
+  },
+
+  /** 浮窗：监听主窗口推送的蓝牙名称/BMS编码当前值 */
+  onFieldValues: (callback: (v: { btName: string; bmsCode: string }) => void) => {
+    ipcRenderer.on('float:values', (_event, v: { btName: string; bmsCode: string }) => callback(v))
   },
 
   /** 浮窗：监听主窗口转发来的通讯日志 */

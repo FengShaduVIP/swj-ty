@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { jbdBus } from '@/jbd/jbd-bus'
 import { useJbd } from '@/jbd/useJbd'
 
@@ -128,6 +128,18 @@ const onLog = (entry: FloatLogEntry) => {
 function showMain() { void window.floatAPI.showMain() }
 function close() { void window.floatAPI.close() }
 function forceWrite() { void window.floatAPI.requestForceWrite() }
+function paramAction(action: 'bt-name' | 'bms-code' | 'reset-mcu', value?: string) {
+  void window.floatAPI.requestParamAction(action, value)
+}
+
+// ===== 蓝牙名称 / BMS编码 输入框 =====
+// 本地持久化（重启保留）；主窗口读取设备/导入模板后推送当前值回填（输入聚焦时不覆盖）
+const btName = ref(localStorage.getItem('float_bt_name') ?? '')
+const bmsCode = ref(localStorage.getItem('float_bms_code') ?? '')
+const btInputEl = ref<HTMLInputElement | null>(null)
+const bmsInputEl = ref<HTMLInputElement | null>(null)
+watch(btName, (v) => localStorage.setItem('float_bt_name', v))
+watch(bmsCode, (v) => localStorage.setItem('float_bms_code', v))
 
 onMounted(() => {
   // 打开浮窗时连接可能已建立，先同步当前状态与端口/波特率，再订阅增量事件
@@ -147,6 +159,11 @@ onMounted(() => {
   window.serialAPI?.onError?.(onSerialError)
   window.floatAPI?.onLog?.(onLog)
   window.floatAPI?.onTemplate?.((name) => { templateName.value = name })
+  window.floatAPI?.onFieldValues?.((v) => {
+    // 仅回填非空值，且输入框聚焦时不覆盖（避免打断正在输入的内容）
+    if (v.btName && document.activeElement !== btInputEl.value) btName.value = v.btName
+    if (v.bmsCode && document.activeElement !== bmsInputEl.value) bmsCode.value = v.bmsCode
+  })
 })
 
 onUnmounted(() => {
@@ -250,6 +267,38 @@ onUnmounted(() => {
         </button>
       </div>
     </main>
+
+    <!-- 底部操作栏：蓝牙名称/BMS编码输入下发 + 复位，横向单行 -->
+    <footer class="float-foot">
+      <input
+        ref="btInputEl"
+        v-model="btName"
+        class="val-input"
+        placeholder="蓝牙名称"
+        maxlength="16"
+        title="蓝牙名称（最长 16 字符），下发走 0xA2 专用指令"
+        spellcheck="false"
+      >
+      <button class="send-btn" :disabled="!conn.connected || !btName.trim()" title="下发蓝牙名称到设备（在主窗口执行）" @click="paramAction('bt-name', btName)">
+        下发名称
+      </button>
+      <input
+        ref="bmsInputEl"
+        v-model="bmsCode"
+        class="val-input"
+        placeholder="BMS编码"
+        maxlength="16"
+        title="BMS编码信息（最长 16 字符）"
+        spellcheck="false"
+      >
+      <button class="send-btn" :disabled="!conn.connected || !bmsCode.trim()" title="下发 BMS 编码信息到设备（在主窗口执行）" @click="paramAction('bms-code', bmsCode)">
+        下发编码
+      </button>
+      <span class="foot-sep" />
+      <button class="send-btn send-btn--crit" :disabled="!conn.connected" title="复位 MCU，设备将重启（在主窗口确认）" @click="paramAction('reset-mcu')">
+        复位MCU
+      </button>
+    </footer>
   </div>
 </template>
 
@@ -273,6 +322,8 @@ onUnmounted(() => {
 }
 .head-actions,
 .force-btn,
+.val-input,
+.send-btn,
 .port-select,
 .float-head .icon-btn {
   -webkit-app-region: no-drag;
@@ -585,5 +636,74 @@ onUnmounted(() => {
 .force-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* ===== 底部操作栏：输入框 + 下发按钮 + 复位，横向单行 ===== */
+.float-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-raised);
+}
+
+.val-input {
+  flex: 1 1 150px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body-sm);
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.val-input::placeholder {
+  color: var(--text-disabled);
+  font-size: var(--fs-caption);
+}
+.val-input:focus {
+  border-color: var(--brand);
+}
+
+.send-btn {
+  flex: none;
+  height: 26px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--brand-ring);
+  border-radius: var(--radius-sm);
+  background: var(--brand-bg-subtle);
+  color: var(--brand-text);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform var(--dur-instant) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.send-btn:active:not(:disabled) { transform: scale(0.95); }
+.send-btn:hover:not(:disabled) { background: var(--brand-bg-hover); }
+.send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.foot-sep {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--space-2);
+  background: var(--border-strong);
+}
+
+.send-btn--crit {
+  border-color: var(--critical-border);
+  background: var(--critical-bg);
+  color: var(--critical);
+}
+.send-btn--crit:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--critical) 18%, transparent);
 }
 </style>
