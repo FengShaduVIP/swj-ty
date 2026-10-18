@@ -288,19 +288,24 @@ ipcMain.on('float:pushValues', (_event, v: unknown) => {
 // 不再经主窗口中转；此处仅保留需要主窗口状态的强制下发请求。
 
 // 浮窗 → 主窗口：强制下发请求。参数状态只存在于主窗口的参数配置页，
-// 因此浮窗仅作遥控器：主进程唤醒主窗口后转发请求，由主窗弹出确认框并执行下发
-ipcMain.handle('float:requestForceWrite', () => {
+// 浮窗仅作遥控器：唤醒主窗口后转发请求，由主窗弹出确认框并执行下发。
+// overrides 携带浮窗输入框的蓝牙名称/BMS编码（空串表示无覆盖，按页面/模板值下发）
+ipcMain.handle('float:requestForceWrite', (_event, overrides: unknown) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
     mainWindow.focus()
-    mainWindow.webContents.send('float:forceWrite')
+    const o = (overrides ?? {}) as { btName?: unknown; bmsCode?: unknown }
+    mainWindow.webContents.send('float:forceWrite', {
+      btName: typeof o.btName === 'string' ? o.btName : '',
+      bmsCode: typeof o.bmsCode === 'string' ? o.bmsCode : '',
+    })
     return { success: true }
   }
   return { success: false }
 })
 
-// 浮窗 → 主窗口：单参数下发（蓝牙名称/BMS编码，可携带浮窗输入框的值）与复位 MCU 请求。
+// 浮窗 → 主窗口：单参数下发（蓝牙名称/BMS编码，携带浮窗输入框的值）与复位 MCU 请求。
 // 字段写入、登录态校验与确认框都在主窗口，浮窗仅遥控：唤醒主窗口后转发动作与值
 ipcMain.on('float:paramAction', (_event, payload: unknown) => {
   if (mainWindow && !mainWindow.isDestroyed()) {

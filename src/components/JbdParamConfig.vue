@@ -8,7 +8,7 @@
           <StatusBadge :status="inFactory ? 'brand' : 'neutral'" :label="inFactory ? '工厂模式' : '普通模式'" />
           <el-button size="small" :disabled="!connected" :loading="busy" @click="readAll"><el-icon><Refresh /></el-icon> 读取全部</el-button>
           <el-button size="small" type="primary" :disabled="!dispatchAllowed || busy" :loading="busy" @click="writeAll"><el-icon><Upload /></el-icon> 全部写入({{ dirtyCount }})</el-button>
-          <el-button size="small" type="warning" :disabled="!dispatchAllowed || busy" :loading="busy" @click="forceWriteAll"><el-icon><Promotion /></el-icon> 强制下发</el-button>
+          <el-button size="small" type="warning" :disabled="!dispatchAllowed || busy" :loading="busy" @click="forceWriteAll()"><el-icon><Promotion /></el-icon> 强制下发</el-button>
           <el-button size="small" @click="openTemplateDialog"><el-icon><FolderOpened /></el-icon> 导入配置</el-button>
           <span v-if="importedSourceName" class="import-source" :title="importedSourceName">
             <el-icon><Document /></el-icon>
@@ -1673,13 +1673,27 @@ async function writeAll() {
 
 // 强制下发：把当前已读取/已显示的字段值全部下发一遍，不依赖脏标记。
 // 适用于「读出来后又想原样写回一遍」的场景（如参数被设备意外清零、或对照核验）。
-async function forceWriteAll() {
+// overrides 由浮窗触发时传入：蓝牙名称/BMS编码以浮窗输入框内容为准（先覆盖页面字段，
+// 下发后页面/浮窗/设备三方一致），其余参数仍按页面当前值（模板导入值或设备读回值）下发。
+async function forceWriteAll(overrides?: { btName?: string; bmsCode?: string }) {
   if (!ensureDispatchAllowed()) return
+  const btV = (overrides?.btName ?? '').trim()
+  const codeV = (overrides?.bmsCode ?? '').trim()
+  if (btV || codeV) {
+    const btF = allFields.value.find((x) => x.key === 'bt-name')
+    const codeF = allFields.value.find((x) => x.key === 'bms-ver')
+    if ((btV && btF?.ascii_len && btV.length > btF.ascii_len) || (codeV && codeF?.ascii_len && codeV.length > codeF.ascii_len)) {
+      ElMessage.warning('蓝牙名称/BMS编码超出长度限制，请修改浮窗输入后重试')
+      return
+    }
+    if (btF && btV) btF.value = btV
+    if (codeF && codeV) codeF.value = codeV
+  }
   const fields = allFields.value.filter(canBatchDispatch)
   if (!fields.length) { ElMessage.warning('暂无可下发的参数（请先读取设备参数）'); return }
   try {
     await ElMessageBox.confirm(
-      `即将把当前读取到的 ${fields.length} 项参数原样全部下发到设备，覆盖设备现有参数。确定继续吗？`,
+      `即将把当前读取到的 ${fields.length} 项参数原样全部下发到设备${btV || codeV ? '（其中蓝牙名称/BMS编码以浮窗输入为准）' : ''}，覆盖设备现有参数。确定继续吗？`,
       '强制下发确认',
       { type: 'warning', confirmButtonText: '确定下发', cancelButtonText: '取消' },
     )

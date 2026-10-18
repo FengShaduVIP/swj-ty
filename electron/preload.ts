@@ -213,9 +213,9 @@ contextBridge.exposeInMainWorld('floatAPI', {
   setAlwaysOnTop: (enabled: boolean): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('float:setAlwaysOnTop', enabled),
 
-  /** 请求主窗口执行强制下发（参数状态与确认框都在主窗口） */
-  requestForceWrite: (): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('float:requestForceWrite'),
+  /** 请求主窗口执行强制下发（overrides 携带浮窗输入的蓝牙名称/BMS编码，空串=按页面值） */
+  requestForceWrite: (overrides?: { btName: string; bmsCode: string }): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('float:requestForceWrite', overrides),
 
   /** 请求主窗口执行单参数下发/复位 MCU（action: bt-name | bms-code | reset-mcu，value 为浮窗输入框值） */
   requestParamAction: (action: 'bt-name' | 'bms-code' | 'reset-mcu', value?: string): void => {
@@ -237,9 +237,10 @@ contextBridge.exposeInMainWorld('floatAPI', {
     ipcRenderer.send('float:pushTemplate', name)
   },
 
-  /** 主窗口：监听浮窗发来的强制下发请求 */
-  onForceWrite: (callback: () => void) => {
-    ipcRenderer.on('float:forceWrite', () => callback())
+  /** 主窗口：监听浮窗发来的强制下发请求（overrides 为浮窗输入的蓝牙名称/BMS编码） */
+  onForceWrite: (callback: (overrides?: { btName?: string; bmsCode?: string }) => void) => {
+    ipcRenderer.on('float:forceWrite', (_event, overrides?: { btName?: string; bmsCode?: string }) =>
+      callback(overrides))
   },
 
   /** 主窗口：监听浮窗发来的单参数下发/复位 MCU 请求 */

@@ -168,8 +168,8 @@ interface FloatAPI {
   showMain: () => Promise<{ success: boolean }>
   /** 切换浮窗置顶 */
   setAlwaysOnTop: (enabled: boolean) => Promise<{ success: boolean }>
-  /** 请求主窗口执行强制下发（参数状态与确认框都在主窗口） */
-  requestForceWrite: () => Promise<{ success: boolean }>
+  /** 请求主窗口执行强制下发（overrides 携带浮窗输入的蓝牙名称/BMS编码，空串=按页面值） */
+  requestForceWrite: (overrides?: { btName: string; bmsCode: string }) => Promise<{ success: boolean }>
   /** 请求主窗口执行单参数下发/复位 MCU（bt-name | bms-code | reset-mcu，value 为浮窗输入框值） */
   requestParamAction: (action: 'bt-name' | 'bms-code' | 'reset-mcu', value?: string) => void
   /** 主窗口：蓝牙名称/BMS编码当前值变化时同步给浮窗输入框 */
@@ -178,8 +178,8 @@ interface FloatAPI {
   pushLog: (entry: FloatLogEntry) => void
   /** 主窗口：当前导入模板名变化时同步给浮窗 */
   pushTemplate: (name: string) => void
-  /** 主窗口：监听浮窗发来的强制下发请求 */
-  onForceWrite: (callback: () => void) => void
+  /** 主窗口：监听浮窗发来的强制下发请求（overrides 为浮窗输入的蓝牙名称/BMS编码） */
+  onForceWrite: (callback: (overrides?: { btName?: string; bmsCode?: string }) => void) => void
   /** 主窗口：监听浮窗发来的单参数下发/复位 MCU 请求 */
   onParamAction: (callback: (action: string, value?: string) => void) => void
   /** 浮窗：监听主窗口推送的蓝牙名称/BMS编码当前值 */

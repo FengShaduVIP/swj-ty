@@ -127,7 +127,10 @@ const onLog = (entry: FloatLogEntry) => {
 
 function showMain() { void window.floatAPI.showMain() }
 function close() { void window.floatAPI.close() }
-function forceWrite() { void window.floatAPI.requestForceWrite() }
+// 强制下发：蓝牙名称/BMS编码以浮窗输入为准，其余参数按模板/页面值（主窗口确认后执行）
+function forceWrite() {
+  void window.floatAPI.requestForceWrite({ btName: btName.value, bmsCode: bmsCode.value })
+}
 function paramAction(action: 'bt-name' | 'bms-code' | 'reset-mcu', value?: string) {
   void window.floatAPI.requestParamAction(action, value)
 }
@@ -262,7 +265,7 @@ onUnmounted(() => {
             <span class="l-text">{{ l.content }}</span>
           </div>
         </div>
-        <button class="force-btn" :disabled="!conn.connected" title="把当前读取到的参数原样全部下发（在主窗口确认）" @click="forceWrite">
+        <button class="force-btn" :disabled="!conn.connected" title="强制下发全部参数：蓝牙名称/BMS编码以本浮窗输入为准，其余按模板/页面值（在主窗口确认）" @click="forceWrite">
           ⚡ 强制下发
         </button>
       </div>

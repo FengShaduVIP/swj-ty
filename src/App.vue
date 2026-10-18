@@ -747,9 +747,10 @@ onMounted(() => {
   })
 
   // 浮窗「强制下发」按钮 → 主进程唤醒本窗口 → 转交参数配置页执行完整下发流程
-  window.floatAPI?.onForceWrite(() => {
+  // （overrides 为浮窗输入框的蓝牙名称/BMS编码，forceWriteAll 内会先覆盖页面字段）
+  window.floatAPI?.onForceWrite((overrides) => {
     active.value = 'config'
-    void paramConfigRef.value?.forceWriteAll()
+    void paramConfigRef.value?.forceWriteAll(overrides)
   })
 
   // 浮窗「蓝牙名称 / BMS编码 / 复位MCU」按钮 → 同样转交参数配置页执行（value 为浮窗输入框值）
@@ -757,8 +758,8 @@ onMounted(() => {
     active.value = 'config'
     const pc = paramConfigRef.value
     if (!pc) return
-    if (action === 'bt-name') void pc.dispatchBtName(value)
-    else if (action === 'bms-code') void pc.dispatchBmsCode(value)
+    if (action === 'bt-name') void pc.dispatchBtName(typeof value === 'string' ? value : undefined)
+    else if (action === 'bms-code') void pc.dispatchBmsCode(typeof value === 'string' ? value : undefined)
     else if (action === 'reset-mcu') void pc.confirmResetMcu()
   })
 
