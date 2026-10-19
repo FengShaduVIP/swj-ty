@@ -1524,6 +1524,11 @@ async function runReadAll(fromFloat: boolean) {
   } else {
     ElMessage.success('读取全部成功')
   }
+  // 读取后无条件推送蓝牙名称/BMS编码给浮窗回填：上面的 watch 只在值「变化」时触发，
+  // 设备值与上次读取相同（用户只是手动改了浮窗草稿）时不会推送，浮窗草稿会残留为
+  // 旧值、与主窗口不一致（真机反馈）。读取是显式刷新动作，覆盖草稿符合预期；
+  // 浮窗侧输入框正被编辑时仍由浮窗守卫跳过，不打断输入
+  window.floatAPI?.pushFieldValues({ btName: btNameValue.value, bmsCode: bmsCodeValue.value })
 }
 
 // 把已导入模板涉及的字段重新标记为待下发（不改动其当前值），
