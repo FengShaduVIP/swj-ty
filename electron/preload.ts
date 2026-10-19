@@ -222,6 +222,11 @@ contextBridge.exposeInMainWorld('floatAPI', {
     ipcRenderer.send('float:paramAction', { action, value })
   },
 
+  /** 请求主窗口执行读取全部（进度经 float:progress 同步回浮窗，读取后蓝牙名称/BMS编码自动回填） */
+  requestReadAll: (): void => {
+    ipcRenderer.send('float:requestReadAll')
+  },
+
   /** 主窗口：蓝牙名称/BMS编码当前值变化时同步给浮窗输入框 */
   pushFieldValues: (v: { btName: string; bmsCode: string }): void => {
     ipcRenderer.send('float:pushValues', v)
@@ -237,8 +242,8 @@ contextBridge.exposeInMainWorld('floatAPI', {
     ipcRenderer.send('float:pushTemplate', name)
   },
 
-  /** 主窗口：浮窗触发的下发进行中，把 busy/进度百分比同步给浮窗进度条 */
-  pushProgress: (p: { busy: boolean; progress: number }): void => {
+  /** 主窗口：浮窗触发的下发/读取进行中，把 busy/进度百分比/类别同步给浮窗进度条 */
+  pushProgress: (p: { busy: boolean; progress: number; kind?: 'read' | 'write' }): void => {
     ipcRenderer.send('float:pushProgress', p)
   },
 
@@ -281,9 +286,14 @@ contextBridge.exposeInMainWorld('floatAPI', {
     ipcRenderer.on('float:template', (_event, name: string) => callback(name))
   },
 
-  /** 浮窗：监听主窗口推送的下发进度（busy/百分比） */
-  onProgress: (callback: (p: { busy: boolean; progress: number }) => void) => {
-    ipcRenderer.on('float:progress', (_event, p: { busy: boolean; progress: number }) => callback(p))
+  /** 浮窗：监听主窗口推送的下发/读取进度（busy/百分比/类别） */
+  onProgress: (callback: (p: { busy: boolean; progress: number; kind?: 'read' | 'write' }) => void) => {
+    ipcRenderer.on('float:progress', (_event, p: { busy: boolean; progress: number; kind?: 'read' | 'write' }) => callback(p))
+  },
+
+  /** 主窗口：监听浮窗发来的读取全部请求 */
+  onReadAll: (callback: () => void) => {
+    ipcRenderer.on('float:readAll', () => callback())
   }
 })
 

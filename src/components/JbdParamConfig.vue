@@ -6,7 +6,7 @@
         <span class="panel-title"><el-icon><Setting /></el-icon> JBD 参数配置</span>
         <div class="header-actions">
           <StatusBadge :status="inFactory ? 'brand' : 'neutral'" :label="inFactory ? '工厂模式' : '普通模式'" />
-          <el-button size="small" :disabled="!connected" :loading="busy" @click="readAll"><el-icon><Refresh /></el-icon> 读取全部</el-button>
+          <el-button size="small" :disabled="!connected" :loading="busy" @click="readAll()"><el-icon><Refresh /></el-icon> 读取全部</el-button>
           <el-button size="small" type="primary" :disabled="!dispatchAllowed || busy" :loading="busy" @click="writeAll"><el-icon><Upload /></el-icon> 全部写入({{ dirtyCount }})</el-button>
           <el-button size="small" type="warning" :disabled="!dispatchAllowed || busy" :loading="busy" @click="forceWriteAll()"><el-icon><Promotion /></el-icon> 强制下发</el-button>
           <el-button size="small" @click="openTemplateDialog"><el-icon><FolderOpened /></el-icon> 导入配置</el-button>
@@ -462,20 +462,23 @@ const j = useJbd()
 const busy = j.batchBusy
 const progress = ref(0)
 const brandColor = '#1F6FE0'
-// 浮窗触发的强制下发进行中：把 busy/progress 同步推给浮窗顶部进度条。
-// 只在浮窗触发时推（主窗口页面上的下发操作浮窗不显示进度）。
-// busy 回落走 300ms 防抖：补读结束与正式下发之间（重读芯片类型）busy 会短暂变回 false，
-// 直接推会让浮窗进度条闪一下；期间 busy 再次变 true 则取消回落推送。
-// 结束时由 forceWriteAll 的收尾逻辑直接补推 busy=false（标志复位后本 watch 不再触发）。
-const floatDispatchActive = ref(false)
+// 浮窗触发的读取/下发进行中：把 busy/progress 同步推给浮窗顶部进度条（含 read/write 类别，
+// 浮窗据此在对应按钮上显示百分比）。只在浮窗触发时推（主窗口页面上的操作浮窗不显示进度）。
+// busy 回落走 300ms 防抖：读取/下发各阶段之间 busy 会短暂变回 false，直接推会让浮窗进度条
+// 闪一下；期间 busy 再次变 true 则取消回落推送。结束由 begin/end 辅助函数显式收尾。
+const floatProgressActive = ref(false)
+const floatProgressKind = ref<'read' | 'write'>('write')
 let floatBusyOffTimer: number | undefined
+function pushFloatProgress(busyNow: boolean, pct: number) {
+  window.floatAPI?.pushProgress({ busy: busyNow, progress: pct, kind: floatProgressKind.value })
+}
 watch([busy, progress], ([b, p]) => {
-  if (!floatDispatchActive.value) return
+  if (!floatProgressActive.value) return
   if (!b) {
     if (floatBusyOffTimer === undefined) {
       floatBusyOffTimer = window.setTimeout(() => {
         floatBusyOffTimer = undefined
-        window.floatAPI?.pushProgress({ busy: false, progress: progress.value })
+        pushFloatProgress(false, progress.value)
       }, 300)
     }
     return
@@ -484,8 +487,27 @@ watch([busy, progress], ([b, p]) => {
     clearTimeout(floatBusyOffTimer)
     floatBusyOffTimer = undefined
   }
-  window.floatAPI?.pushProgress({ busy: true, progress: p })
+  pushFloatProgress(true, p)
 })
+function beginFloatProgress(kind: 'read' | 'write') {
+  floatProgressKind.value = kind
+  floatProgressActive.value = true
+  if (floatBusyOffTimer !== undefined) {
+    clearTimeout(floatBusyOffTimer)
+    floatBusyOffTimer = undefined
+  }
+  pushFloatProgress(true, 0)
+}
+function endFloatProgress() {
+  // watch 在标志复位后不再触发，必须在这里显式补推 busy=false，否则浮窗进度条卡住
+  if (!floatProgressActive.value) return
+  floatProgressActive.value = false
+  if (floatBusyOffTimer !== undefined) {
+    clearTimeout(floatBusyOffTimer)
+    floatBusyOffTimer = undefined
+  }
+  pushFloatProgress(false, progress.value)
+}
 
 // ====== ASCII 解析 ======
 /** 从 0xFA 多寄存器应答中解码 ASCII 字串
@@ -1400,8 +1422,24 @@ function planReadChunks(regs: number[]): { start: number; count: number }[] {
   return chunks
 }
 
-async function readAll() {
-  if (!props.connected) return
+// 读取全部。浮窗可触发（opts.fromFloat=true）：进度推给浮窗进度条，拒绝/失败原因走屏幕级
+// 通知（主窗口隐藏时 ElMessage 看不见）；读取完成后 bt-name/bms-ver 字段值更新，经既有
+// btNameValue/bmsCodeValue watch 自动推送浮窗输入框实时回填（输入框聚焦时不覆盖）
+async function readAll(opts?: { fromFloat?: boolean }) {
+  const fromFloat = opts?.fromFloat === true
+  if (!props.connected) {
+    screenNotifyWarning('请先连接串口', fromFloat)
+    return
+  }
+  if (fromFloat) beginFloatProgress('read')
+  try {
+    await runReadAll(fromFloat)
+  } finally {
+    if (fromFloat) endFloatProgress()
+  }
+}
+
+async function runReadAll(fromFloat: boolean) {
   busEpoch++
   busy.value = true
   progress.value = 0
@@ -1424,7 +1462,12 @@ async function readAll() {
     if (f.kind === 'scd') continue
     for (const r of fieldRegisters(f)) regSet.add(r)
   }
-  if (!regSet.size) { busy.value = false; ElMessage.warning('没有可读取的参数'); return }
+  if (!regSet.size) {
+    busy.value = false
+    ElMessage.warning('没有可读取的参数')
+    screenNotifyWarning('没有可读取的参数（请先导入模板）', fromFloat)
+    return
+  }
   const rawMap: Record<number, number> = {}
   const failedRegs = new Set<number>()
   // 仅读取实际用到的寄存器：按连续段（run）合并、段内按 READ_CHUNK 切分（planReadChunks），
@@ -1474,8 +1517,13 @@ async function readAll() {
   }
   progress.value = 100
   busy.value = false
-  if (fail) ElMessage.warning(`读取全部失败：${fail} 个参数读取失败`)
-  else ElMessage.success('读取全部成功')
+  if (fail) {
+    ElMessage.warning(`读取全部失败：${fail} 个参数读取失败`)
+    // 浮窗触发时主窗口可能隐藏，读取失败原因（含蓝牙名称/BMS编码未回填的可能原因）走屏幕级通知
+    screenNotifyWarning(`读取全部失败：${fail} 个参数读取失败`, fromFloat)
+  } else {
+    ElMessage.success('读取全部成功')
+  }
 }
 
 // 把已导入模板涉及的字段重新标记为待下发（不改动其当前值），
@@ -1785,13 +1833,8 @@ async function forceWriteAll(overrides?: { btName?: string; bmsCode?: string }, 
     if (codeF && codeV) codeF.value = codeV
   }
   if (fromFloat) {
-    floatDispatchActive.value = true
+    beginFloatProgress('write')
     progress.value = 0
-    if (floatBusyOffTimer !== undefined) {
-      clearTimeout(floatBusyOffTimer)
-      floatBusyOffTimer = undefined
-    }
-    window.floatAPI?.pushProgress({ busy: true, progress: 0 })
   }
   try {
     const stillMissing = await fillMissingFieldValues()
@@ -1839,16 +1882,8 @@ async function forceWriteAll(overrides?: { btName?: string; bmsCode?: string }, 
     addDispatchRecord({ btName, params })
     ElMessage.info('已记录本次强制下发到本地历史')
   } finally {
-    // 收尾：标志复位并直接补推 busy=false。sendFields 内部已置 busy=false，
-    // 但此时 watch 可能因标志已复位而不再触发，必须在这里显式补推，否则浮窗进度条卡住
-    if (floatDispatchActive.value) {
-      floatDispatchActive.value = false
-      if (floatBusyOffTimer !== undefined) {
-        clearTimeout(floatBusyOffTimer)
-        floatBusyOffTimer = undefined
-      }
-      window.floatAPI?.pushProgress({ busy: false, progress: progress.value })
-    }
+    // 收尾：复位标志并直接补推 busy=false，保证任何出口浮窗进度条都会结束
+    if (fromFloat) endFloatProgress()
   }
 }
 
@@ -2139,7 +2174,7 @@ function exportConfig() {
 
 // 暴露给父组件：浮动窗口的「强制下发 / 蓝牙名称 / BMS编码 / 复位MCU」按钮
 // 经 App.vue 转发调用，复用本页完整流程（权限校验 → 确认框 → 进厂写入 → 记录）
-defineExpose({ forceWriteAll, dispatchBtName, dispatchBmsCode, confirmResetMcu })
+defineExpose({ forceWriteAll, dispatchBtName, dispatchBmsCode, confirmResetMcu, readAll })
 </script>
 
 <style scoped>

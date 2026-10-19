@@ -328,13 +328,14 @@ ipcMain.handle('float:requestForceWrite', async (_event, overrides: unknown) => 
   return { success: true }
 })
 
-// 主窗口 → 浮窗：下发进度（浮窗触发的强制下发期间同步 busy/进度百分比，浮窗顶部显示进度条）
-let floatDispatchProgress: { busy: boolean; progress: number } = { busy: false, progress: 0 }
+// 主窗口 → 浮窗：下发/读取进度（浮窗触发的操作期间同步 busy/进度百分比/类别，浮窗顶部显示进度条）
+let floatDispatchProgress: { busy: boolean; progress: number; kind?: 'read' | 'write' } = { busy: false, progress: 0 }
 ipcMain.on('float:pushProgress', (_event, p: unknown) => {
-  const v = p as { busy?: unknown; progress?: unknown } | null
+  const v = p as { busy?: unknown; progress?: unknown; kind?: unknown } | null
   floatDispatchProgress = {
     busy: v?.busy === true,
     progress: typeof v?.progress === 'number' ? Math.min(100, Math.max(0, Math.round(v.progress))) : 0,
+    kind: v?.kind === 'read' ? 'read' : v?.kind === 'write' ? 'write' : undefined,
   }
   if (floatWindow && !floatWindow.isDestroyed()) {
     floatWindow.webContents.send('float:progress', floatDispatchProgress)
@@ -357,6 +358,14 @@ ipcMain.on('float:paramAction', async (_event, payload: unknown) => {
     return
   }
   mainWindow.webContents.send('float:paramAction', { action, value })
+})
+
+// 浮窗 → 主窗口：读取全部请求。只读操作无确认框，不唤醒主窗口，静默转发执行；
+// 读取进度经 float:pushProgress 同步回浮窗进度条，读取后蓝牙名称/BMS编码自动推送浮窗回填
+ipcMain.on('float:requestReadAll', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('float:readAll')
+  }
 })
 
 // ======== 屏幕级通知窗（右上角、置顶所有窗口、不自动关闭） ========

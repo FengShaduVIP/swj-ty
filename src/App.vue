@@ -765,6 +765,13 @@ onMounted(() => {
     else if (action === 'reset-mcu') void pc.confirmResetMcu({ skipConfirm })
   })
 
+  // 浮窗「读取全部」按钮 → 静默转发（不唤醒本窗口），读取进度推回浮窗进度条；
+  // 读取完成后 bt-name/bms-ver 值更新，经既有 watch 自动推送浮窗输入框实时回填
+  window.floatAPI?.onReadAll(() => {
+    active.value = 'config'
+    void paramConfigRef.value?.readAll({ fromFloat: true })
+  })
+
   // 按持久化的配置启动自动连接（若启用），在监听器就绪后再开启
   applyAutoConnect()
 })

@@ -126,15 +126,19 @@ const onLog = (entry: FloatLogEntry) => {
   if (logs.value.length > 50) logs.value.splice(0, logs.value.length - 50)
 }
 
-// ===== 浮窗触发的强制下发进度（主窗口推送；顶部进度条 + ⚡按钮显示百分比） =====
-const dispatch = ref({ busy: false, progress: 0 })
-const onProgress = (p: { busy: boolean; progress: number }) => { dispatch.value = p }
+// ===== 浮窗触发的读取/下发进度（主窗口推送；顶部进度条 + 对应按钮显示百分比） =====
+const dispatch = ref<{ busy: boolean; progress: number; kind?: 'read' | 'write' }>({ busy: false, progress: 0 })
+const onProgress = (p: { busy: boolean; progress: number; kind?: 'read' | 'write' }) => { dispatch.value = p }
 
 function showMain() { void window.floatAPI.showMain() }
 function close() { void window.floatAPI.close() }
 // 强制下发：蓝牙名称/BMS编码以浮窗输入为准，其余参数按模板/页面值（浮窗弹窗确认后执行，不弹出主窗口）
 function forceWrite() {
   void window.floatAPI.requestForceWrite({ btName: btName.value, bmsCode: bmsCode.value })
+}
+// 读取全部：经主进程静默转发主窗口执行（不弹主窗口），读取后蓝牙名称/BMS编码自动回填输入框
+function readAll() {
+  void window.floatAPI.requestReadAll()
 }
 function paramAction(action: 'bt-name' | 'bms-code' | 'reset-mcu', value?: string) {
   void window.floatAPI.requestParamAction(action, value)
@@ -169,9 +173,13 @@ onMounted(() => {
   window.floatAPI?.onTemplate?.((name) => { templateName.value = name })
   window.floatAPI?.onProgress?.(onProgress)
   window.floatAPI?.onFieldValues?.((v) => {
-    // 仅回填非空值，且输入框聚焦时不覆盖（避免打断正在输入的内容）
-    if (v.btName && document.activeElement !== btInputEl.value) btName.value = v.btName
-    if (v.bmsCode && document.activeElement !== bmsInputEl.value) bmsCode.value = v.bmsCode
+    // 仅当浮窗本身处于聚焦且输入框正被编辑时才跳过回填（避免打断正在输入的内容）。
+    // 不能只看 activeElement：浮窗失焦后（如去主窗口操作时）它残留为最后一次聚焦的
+    // 元素（比如 BMS编码输入框），会导致回填被误判为「正在输入」而永远不更新。
+    const editing = (el: HTMLInputElement | null) =>
+      el != null && document.hasFocus() && document.activeElement === el
+    if (v.btName && !editing(btInputEl.value)) btName.value = v.btName
+    if (v.bmsCode && !editing(bmsInputEl.value)) bmsCode.value = v.bmsCode
   })
 })
 
@@ -266,7 +274,7 @@ onUnmounted(() => {
 
       <div class="v-sep" />
 
-      <!-- 右侧：两行通讯日志 + 强制下发 -->
+      <!-- 右侧：两行通讯日志 + 读取全部/强制下发 -->
       <div class="side">
         <div class="log-strip" title="实时通信日志（与参数配置页一致）">
           <div v-if="!logStrip.length" class="log-empty">暂无通信日志</div>
@@ -276,9 +284,19 @@ onUnmounted(() => {
             <span class="l-text">{{ l.content }}</span>
           </div>
         </div>
-        <button class="force-btn" :disabled="!conn.connected || dispatch.busy" :title="dispatch.busy ? `强制下发进行中 ${dispatch.progress}%` : '强制下发全部参数：蓝牙名称/BMS编码以本浮窗输入为准，其余按模板/页面值（本浮窗弹窗确认，不弹出主窗口）'" @click="forceWrite">
-          {{ dispatch.busy ? `⚡ ${dispatch.progress}%` : '⚡ 强制下发' }}
-        </button>
+        <div class="side-actions">
+          <button
+            class="read-btn"
+            :disabled="!conn.connected || dispatch.busy"
+            :title="dispatch.busy && dispatch.kind === 'read' ? `读取全部进行中 ${dispatch.progress}%` : '读取全部参数：读取后蓝牙名称/BMS编码自动回填本浮窗输入框（在主窗口执行，不弹出主窗口）'"
+            @click="readAll"
+          >
+            {{ dispatch.busy && dispatch.kind === 'read' ? `读取 ${dispatch.progress}%` : '读取全部' }}
+          </button>
+          <button class="force-btn" :disabled="!conn.connected || dispatch.busy" :title="dispatch.busy && dispatch.kind === 'write' ? `强制下发进行中 ${dispatch.progress}%` : '强制下发全部参数：蓝牙名称/BMS编码以本浮窗输入为准，其余按模板/页面值（本浮窗弹窗确认，不弹出主窗口）'" @click="forceWrite">
+            {{ dispatch.busy && dispatch.kind === 'write' ? `⚡ ${dispatch.progress}%` : '⚡ 强制下发' }}
+          </button>
+        </div>
       </div>
     </main>
 
@@ -309,7 +327,7 @@ onUnmounted(() => {
         下发编码
       </button>
       <span class="foot-sep" />
-      <button class="send-btn send-btn--crit" :disabled="!conn.connected || dispatch.busy" title="复位 MCU，设备将重启（本浮窗弹窗确认，不弹出主窗口；下发进行中不可点）" @click="paramAction('reset-mcu')">
+      <button class="send-btn send-btn--crit" :disabled="!conn.connected || dispatch.busy" title="复位 MCU，设备将重启（本浮窗弹窗确认，不弹出主窗口；读取/下发进行中不可点）" @click="paramAction('reset-mcu')">
         复位MCU
       </button>
     </footer>
@@ -336,6 +354,7 @@ onUnmounted(() => {
 }
 .head-actions,
 .force-btn,
+.read-btn,
 .val-input,
 .send-btn,
 .port-select,
@@ -590,6 +609,44 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--space-2);
   padding-left: var(--space-3);
+}
+
+/* 日志条下方按钮行：读取全部 + 强制下发 均分宽度 */
+.side-actions {
+  flex: none;
+  display: flex;
+  gap: var(--space-2);
+}
+.side-actions .read-btn,
+.side-actions .force-btn {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.read-btn {
+  height: 26px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-size: var(--fs-body-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: transform var(--dur-instant) var(--ease-out), background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.read-btn:hover:not(:disabled) {
+  color: var(--brand-solid);
+  border-color: var(--brand-ring);
+  background: var(--brand-bg-subtle);
+}
+.read-btn:active:not(:disabled) { transform: scale(0.97); }
+.read-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .log-strip {
