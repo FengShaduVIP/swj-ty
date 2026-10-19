@@ -1766,61 +1766,16 @@ async function writeAll() {
   await sendFields(injectFullChargeMirror(dirty))
 }
 
-/** 强制下发前补齐缺失参数值：仅对「可下发但当前无值」的字段从设备补读并回填。
- *  只填空值、不覆盖已有值——模板导入/手动修改/浮窗覆盖的值原样保留（否则模板推送
- *  场景会被设备当前值冲掉）。数值/日期走批量读（段失败回退逐寄存器，与 readAll 同源），
- *  ASCII/scd 走 readField 单读（设备对大跨度/跨边界批量读会错位，见 readAll 注释）。
- *  返回补读后仍无值的字段数（读取失败项），供确认框提示「将跳过」。 */
-async function fillMissingFieldValues(): Promise<number> {
-  const structurallyOk = allFields.value.filter(canDispatchStructurally)
-  const missing = structurallyOk.filter((f) => f.value === null || f.value === undefined)
-  if (!missing.length) return 0
-  ElMessage.info(`检测到 ${missing.length} 项参数尚未读取，正在自动补读设备参数…`)
-  busEpoch++
-  busy.value = true
-  try {
-    const batchable = missing.filter((f) => !f.ascii && f.kind !== 'scd')
-    const singles = missing.filter((f) => f.ascii || f.kind === 'scd')
-    const rawMap: Record<number, number> = {}
-    for (const ch of planReadChunks(batchable.map((f) => f.index!))) {
-      jbdBus.send(buildReadParam(ch.start, ch.count))
-      const resp = await jbdBus.onceResponse(FRAME_TIMEOUT_MS, 0xfa)
-      const batch = parseBatchResponse(resp, ch.start, ch.count)
-      if (batch) {
-        Object.assign(rawMap, batch)
-        continue
-      }
-      // 该段批量读失败：段内逐寄存器单条读回退（与 readAll 的回退同源）
-      for (let r = ch.start; r < ch.start + ch.count; r++) {
-        jbdBus.send(buildReadParam(r, 1))
-        const rr = await awaitParamResponse(r, FRAME_TIMEOUT_MS)
-        const raw = parseParamResponse(rr)
-        if (raw !== null) rawMap[r] = raw
-      }
-    }
-    for (const f of batchable) {
-      if (f.value !== null && f.value !== undefined) continue // 双保险：已有值不覆盖
-      applyFieldFromRaw(f, rawMap)
-    }
-    for (const f of singles) {
-      if (f.value !== null && f.value !== undefined) continue // scd 对端可能已随首字段回填
-      await readField(f)
-    }
-  } finally {
-    busy.value = false
-  }
-  return structurallyOk.filter((f) => f.value === null || f.value === undefined).length
-}
-
 // 强制下发：把当前已读取/已显示的字段值全部下发一遍，不依赖脏标记。
 // 适用于「读出来后又想原样写回一遍」的场景（如参数被设备意外清零、或对照核验）。
 // overrides 由浮窗触发时传入：蓝牙名称/BMS编码以浮窗输入框内容为准（先覆盖页面字段，
 // 下发后页面/浮窗/设备三方一致），其余参数仍按页面当前值（模板导入值或设备读回值）下发。
-// 下发前自动补读缺失参数（从未读取/读取失败的字段），使确认框数量恒为全量口径，
-// 与参数页「读取全部后强制下发」一致——否则浮窗直发（页面未读取）只提示 2 项，数量误导。
+// 下发前不做自动补读（2026-10-19 按需求移除）：补读会对无值字段逐项读设备（批量失败再
+// 逐寄存器单读、每条超时 1.5s），未读取过的电池上直接强制下发会卡几十秒。需要读取时用
+// 「读取全部」按钮显式触发；无值字段直接跳过，确认框数量即实际下发数。
 // 浮窗触发（opts.skipConfirm=true）时确认已在浮窗侧原生对话框完成，跳过页内二次确认；
 // 且主窗口可能隐藏，拒绝/异常原因需同步屏幕级通知窗提示。
-// 浮窗触发期间把 busy/progress 推给浮窗进度条：开始时归零（补读阶段 0%），下发阶段逐项递增
+// 浮窗触发期间把 busy/progress 推给浮窗进度条：开始时归零，下发阶段逐项递增
 async function forceWriteAll(overrides?: { btName?: string; bmsCode?: string }, opts?: { skipConfirm?: boolean }) {
   if (!ensureDispatchAllowed(opts?.skipConfirm)) return
   const fromFloat = opts?.skipConfirm === true
@@ -1842,18 +1797,16 @@ async function forceWriteAll(overrides?: { btName?: string; bmsCode?: string }, 
     progress.value = 0
   }
   try {
-    const stillMissing = await fillMissingFieldValues()
     const fields = allFields.value.filter(canBatchDispatch)
     if (!fields.length) {
-      ElMessage.warning('暂无可下发的参数（请先读取设备参数）')
-      screenNotifyWarning('暂无可下发的参数（请先读取设备参数）', fromFloat)
+      ElMessage.warning('暂无可下发的参数（请先读取设备参数或导入模板）')
+      screenNotifyWarning('暂无可下发的参数（请先读取设备参数或导入模板）', fromFloat)
       return
     }
-    const missingTip = stillMissing > 0 ? `，另有 ${stillMissing} 项读取失败本次跳过` : ''
     if (!opts?.skipConfirm) {
       try {
         await ElMessageBox.confirm(
-          `即将把全量 ${fields.length} 项参数下发到设备${btV || codeV ? '（其中蓝牙名称/BMS编码以浮窗输入为准）' : ''}${missingTip}，覆盖设备现有参数。确定继续吗？`,
+          `即将把 ${fields.length} 项参数下发到设备${btV || codeV ? '（其中蓝牙名称/BMS编码以浮窗输入为准）' : ''}，覆盖设备现有参数。确定继续吗？`,
           '强制下发确认',
           { type: 'warning', confirmButtonText: '确定下发', cancelButtonText: '取消' },
         )

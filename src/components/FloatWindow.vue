@@ -293,7 +293,7 @@ onUnmounted(() => {
           >
             {{ dispatch.busy && dispatch.kind === 'read' ? `读取 ${dispatch.progress}%` : '读取全部' }}
           </button>
-          <button class="force-btn" :disabled="!conn.connected || dispatch.busy" :title="dispatch.busy && dispatch.kind === 'write' ? `强制下发进行中 ${dispatch.progress}%` : '强制下发全部参数：蓝牙名称/BMS编码以本浮窗输入为准，其余按模板/页面值（本浮窗弹窗确认，不弹出主窗口）'" @click="forceWrite">
+          <button class="force-btn" :disabled="!conn.connected || dispatch.busy" :title="dispatch.busy && dispatch.kind === 'write' ? `强制下发进行中 ${dispatch.progress}%` : '强制下发参数：蓝牙名称/BMS编码以本浮窗输入为准，其余按页面值（本浮窗弹窗确认，不弹出主窗口；无值的参数会跳过）'" @click="forceWrite">
             {{ dispatch.busy && dispatch.kind === 'write' ? `⚡ ${dispatch.progress}%` : '⚡ 强制下发' }}
           </button>
         </div>

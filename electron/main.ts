@@ -316,7 +316,7 @@ ipcMain.handle('float:requestForceWrite', async (_event, overrides: unknown) => 
   const overrideTip = btV || codeV ? '（其中蓝牙名称/BMS编码以浮窗输入为准）' : ''
   const ok = await confirmOnFloatWindow(
     '强制下发确认',
-    `即将把全量参数下发到设备${overrideTip}，覆盖设备现有参数。确定继续吗？`
+    `即将把参数下发到设备${overrideTip}，覆盖设备现有参数。确定继续吗？`
   )
   if (!ok) return { success: false, canceled: true }
   if (!mainWindow || mainWindow.isDestroyed()) return { success: false }
