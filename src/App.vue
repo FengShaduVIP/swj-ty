@@ -746,21 +746,23 @@ onMounted(() => {
     handleStatusChange(status)
   })
 
-  // 浮窗「强制下发」按钮 → 主进程唤醒本窗口 → 转交参数配置页执行完整下发流程
-  // （overrides 为浮窗输入框的蓝牙名称/BMS编码，forceWriteAll 内会先覆盖页面字段）
-  window.floatAPI?.onForceWrite((overrides) => {
+  // 浮窗「强制下发」按钮 → 主进程在浮窗上弹原生确认框（不唤醒本窗口）→ 确认后转交参数配置页
+  // 执行完整下发流程（overrides 为浮窗输入框的蓝牙名称/BMS编码，forceWriteAll 内会先覆盖页面字段；
+  // skipConfirm=true 表示浮窗侧已确认，跳过页内 ElMessageBox 二次确认）
+  window.floatAPI?.onForceWrite((overrides, skipConfirm) => {
     active.value = 'config'
-    void paramConfigRef.value?.forceWriteAll(overrides)
+    void paramConfigRef.value?.forceWriteAll(overrides, { skipConfirm })
   })
 
-  // 浮窗「蓝牙名称 / BMS编码 / 复位MCU」按钮 → 同样转交参数配置页执行（value 为浮窗输入框值）
-  window.floatAPI?.onParamAction((action, value) => {
+  // 浮窗「蓝牙名称 / BMS编码 / 复位MCU」按钮 → 同样转交参数配置页执行（value 为浮窗输入框值；
+  // 复位 MCU 的确认已在浮窗侧完成，skipConfirm=true 时跳过页内二次确认）
+  window.floatAPI?.onParamAction((action, value, skipConfirm) => {
     active.value = 'config'
     const pc = paramConfigRef.value
     if (!pc) return
     if (action === 'bt-name') void pc.dispatchBtName(typeof value === 'string' ? value : undefined)
     else if (action === 'bms-code') void pc.dispatchBmsCode(typeof value === 'string' ? value : undefined)
-    else if (action === 'reset-mcu') void pc.confirmResetMcu()
+    else if (action === 'reset-mcu') void pc.confirmResetMcu({ skipConfirm })
   })
 
   // 按持久化的配置启动自动连接（若启用），在监听器就绪后再开启

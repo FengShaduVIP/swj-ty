@@ -311,7 +311,7 @@
                   size="small"
                   type="warning"
                   :disabled="!dispatchAllowed"
-                  @click="confirmResetMcu"
+                  @click="confirmResetMcu()"
                 >复位MCU</el-button>
                 <span v-if="f.status === 'ok'" class="dot ok" />
                 <span v-else-if="f.status === 'fail'" class="dot fail" title="失败/超时" />
@@ -379,13 +379,22 @@ const commStrip = computed(() => (props.logs || []).slice(-2))
 // 后台登录状态由全局顶栏持有；本页面只根据它禁止/允许参数下发。
 const dispatchAllowed = computed(() => canDispatchParameters(props.connected, props.authSession))
 
-function ensureDispatchAllowed(): boolean {
+// 浮窗触发时主窗口可能处于隐藏/最小化状态，页内 ElMessage 用户看不到，
+// 需同步走屏幕级通知窗（独立置顶右上角、手动关闭），让浮窗操作者拿到未执行原因
+function screenNotifyWarning(message: string, fromFloat: boolean) {
+  if (!fromFloat) return
+  window.notifyAPI?.show({ title: '操作未执行', message, type: 'warning' })
+}
+
+function ensureDispatchAllowed(screenNotify = false): boolean {
   if (!props.connected) {
     ElMessage.warning('请先连接串口')
+    screenNotifyWarning('请先连接串口', screenNotify)
     return false
   }
   if (!isAuthSessionValid(props.authSession)) {
     ElMessage.warning('请先登录后台，再下发参数')
+    screenNotifyWarning('请先登录后台，再下发参数', screenNotify)
     return false
   }
   return true
@@ -453,6 +462,30 @@ const j = useJbd()
 const busy = j.batchBusy
 const progress = ref(0)
 const brandColor = '#1F6FE0'
+// 浮窗触发的强制下发进行中：把 busy/progress 同步推给浮窗顶部进度条。
+// 只在浮窗触发时推（主窗口页面上的下发操作浮窗不显示进度）。
+// busy 回落走 300ms 防抖：补读结束与正式下发之间（重读芯片类型）busy 会短暂变回 false，
+// 直接推会让浮窗进度条闪一下；期间 busy 再次变 true 则取消回落推送。
+// 结束时由 forceWriteAll 的收尾逻辑直接补推 busy=false（标志复位后本 watch 不再触发）。
+const floatDispatchActive = ref(false)
+let floatBusyOffTimer: number | undefined
+watch([busy, progress], ([b, p]) => {
+  if (!floatDispatchActive.value) return
+  if (!b) {
+    if (floatBusyOffTimer === undefined) {
+      floatBusyOffTimer = window.setTimeout(() => {
+        floatBusyOffTimer = undefined
+        window.floatAPI?.pushProgress({ busy: false, progress: progress.value })
+      }, 300)
+    }
+    return
+  }
+  if (floatBusyOffTimer !== undefined) {
+    clearTimeout(floatBusyOffTimer)
+    floatBusyOffTimer = undefined
+  }
+  window.floatAPI?.pushProgress({ busy: true, progress: p })
+})
 
 // ====== ASCII 解析 ======
 /** 从 0xFA 多寄存器应答中解码 ASCII 字串
@@ -756,13 +789,16 @@ const displayColumns = computed(() => {
   )
 })
 
-// 字段行内「复位 MCU」按钮：发送控制指令 0x03 0x00（原设备控制页 runControl(RESET_MCU) 同源逻辑）
-async function confirmResetMcu() {
-  if (!ensureDispatchAllowed()) return
-  try {
-    await ElMessageBox.confirm('确定要复位 MCU 吗？设备将重新启动。', '复位 MCU', { type: 'warning' })
-  } catch {
-    return // 用户取消
+// 字段行内「复位 MCU」按钮：发送控制指令 0x03 0x00（原设备控制页 runControl(RESET_MCU) 同源逻辑）。
+// 浮窗触发（skipConfirm=true）时确认已在浮窗侧的原生对话框完成，这里不再弹页内确认框
+async function confirmResetMcu(opts?: { skipConfirm?: boolean }) {
+  if (!ensureDispatchAllowed(opts?.skipConfirm)) return
+  if (!opts?.skipConfirm) {
+    try {
+      await ElMessageBox.confirm('确定要复位 MCU 吗？设备将重新启动。', '复位 MCU', { type: 'warning' })
+    } catch {
+      return // 用户取消
+    }
   }
   // 控制指令在部分固件下需先进入工厂模式才允许执行：
   // 发送前临时进入工厂态（若当前未处于工厂态），发送后退出，避免遗留锁态。
@@ -1650,13 +1686,19 @@ function injectFullChargeMirror(fields: FieldState[]): FieldState[] {
  *  值为 null 时按 0 下发会写出无效数据，如清空后的生产日期变成 0x0000）。
  *  生产日期（customDisplay='date'）的 f.value 即寄存器 raw，走普通数值分支下发，
  *  必须包含——此前被 !customDisplay 一刀切排除，导致日期永远不随批量下发。 */
-function canBatchDispatch(f: FieldState): boolean {
+/** 可下发字段的静态条件（不看当前值）：有寄存器、可写、非位开关（位图走分组下发）、
+ *  非密码字段（避免批量中途反复弹密码框）。 */
+function canDispatchStructurally(f: FieldState): boolean {
   if (f.customDisplay && f.customDisplay !== 'date') return false
   if (f.readOnly) return false
   if (isBitSwitch(f)) return false
   if (f.index === undefined) return false
   if (f.needPassword) return false
-  return f.value !== null && f.value !== undefined
+  return true
+}
+
+function canBatchDispatch(f: FieldState): boolean {
+  return canDispatchStructurally(f) && f.value !== null && f.value !== undefined
 }
 
 async function writeAll() {
@@ -1671,12 +1713,64 @@ async function writeAll() {
   await sendFields(injectFullChargeMirror(dirty))
 }
 
+/** 强制下发前补齐缺失参数值：仅对「可下发但当前无值」的字段从设备补读并回填。
+ *  只填空值、不覆盖已有值——模板导入/手动修改/浮窗覆盖的值原样保留（否则模板推送
+ *  场景会被设备当前值冲掉）。数值/日期走批量读（段失败回退逐寄存器，与 readAll 同源），
+ *  ASCII/scd 走 readField 单读（设备对大跨度/跨边界批量读会错位，见 readAll 注释）。
+ *  返回补读后仍无值的字段数（读取失败项），供确认框提示「将跳过」。 */
+async function fillMissingFieldValues(): Promise<number> {
+  const structurallyOk = allFields.value.filter(canDispatchStructurally)
+  const missing = structurallyOk.filter((f) => f.value === null || f.value === undefined)
+  if (!missing.length) return 0
+  ElMessage.info(`检测到 ${missing.length} 项参数尚未读取，正在自动补读设备参数…`)
+  busEpoch++
+  busy.value = true
+  try {
+    const batchable = missing.filter((f) => !f.ascii && f.kind !== 'scd')
+    const singles = missing.filter((f) => f.ascii || f.kind === 'scd')
+    const rawMap: Record<number, number> = {}
+    for (const ch of planReadChunks(batchable.map((f) => f.index!))) {
+      jbdBus.send(buildReadParam(ch.start, ch.count))
+      const resp = await jbdBus.onceResponse(FRAME_TIMEOUT_MS, 0xfa)
+      const batch = parseBatchResponse(resp, ch.start, ch.count)
+      if (batch) {
+        Object.assign(rawMap, batch)
+        continue
+      }
+      // 该段批量读失败：段内逐寄存器单条读回退（与 readAll 的回退同源）
+      for (let r = ch.start; r < ch.start + ch.count; r++) {
+        jbdBus.send(buildReadParam(r, 1))
+        const rr = await awaitParamResponse(r, FRAME_TIMEOUT_MS)
+        const raw = parseParamResponse(rr)
+        if (raw !== null) rawMap[r] = raw
+      }
+    }
+    for (const f of batchable) {
+      if (f.value !== null && f.value !== undefined) continue // 双保险：已有值不覆盖
+      applyFieldFromRaw(f, rawMap)
+    }
+    for (const f of singles) {
+      if (f.value !== null && f.value !== undefined) continue // scd 对端可能已随首字段回填
+      await readField(f)
+    }
+  } finally {
+    busy.value = false
+  }
+  return structurallyOk.filter((f) => f.value === null || f.value === undefined).length
+}
+
 // 强制下发：把当前已读取/已显示的字段值全部下发一遍，不依赖脏标记。
 // 适用于「读出来后又想原样写回一遍」的场景（如参数被设备意外清零、或对照核验）。
 // overrides 由浮窗触发时传入：蓝牙名称/BMS编码以浮窗输入框内容为准（先覆盖页面字段，
 // 下发后页面/浮窗/设备三方一致），其余参数仍按页面当前值（模板导入值或设备读回值）下发。
-async function forceWriteAll(overrides?: { btName?: string; bmsCode?: string }) {
-  if (!ensureDispatchAllowed()) return
+// 下发前自动补读缺失参数（从未读取/读取失败的字段），使确认框数量恒为全量口径，
+// 与参数页「读取全部后强制下发」一致——否则浮窗直发（页面未读取）只提示 2 项，数量误导。
+// 浮窗触发（opts.skipConfirm=true）时确认已在浮窗侧原生对话框完成，跳过页内二次确认；
+// 且主窗口可能隐藏，拒绝/异常原因需同步屏幕级通知窗提示。
+// 浮窗触发期间把 busy/progress 推给浮窗进度条：开始时归零（补读阶段 0%），下发阶段逐项递增
+async function forceWriteAll(overrides?: { btName?: string; bmsCode?: string }, opts?: { skipConfirm?: boolean }) {
+  if (!ensureDispatchAllowed(opts?.skipConfirm)) return
+  const fromFloat = opts?.skipConfirm === true
   const btV = (overrides?.btName ?? '').trim()
   const codeV = (overrides?.bmsCode ?? '').trim()
   if (btV || codeV) {
@@ -1684,46 +1778,78 @@ async function forceWriteAll(overrides?: { btName?: string; bmsCode?: string }) 
     const codeF = allFields.value.find((x) => x.key === 'bms-ver')
     if ((btV && btF?.ascii_len && btV.length > btF.ascii_len) || (codeV && codeF?.ascii_len && codeV.length > codeF.ascii_len)) {
       ElMessage.warning('蓝牙名称/BMS编码超出长度限制，请修改浮窗输入后重试')
+      screenNotifyWarning('蓝牙名称/BMS编码超出长度限制，请修改浮窗输入后重试', fromFloat)
       return
     }
     if (btF && btV) btF.value = btV
     if (codeF && codeV) codeF.value = codeV
   }
-  const fields = allFields.value.filter(canBatchDispatch)
-  if (!fields.length) { ElMessage.warning('暂无可下发的参数（请先读取设备参数）'); return }
+  if (fromFloat) {
+    floatDispatchActive.value = true
+    progress.value = 0
+    if (floatBusyOffTimer !== undefined) {
+      clearTimeout(floatBusyOffTimer)
+      floatBusyOffTimer = undefined
+    }
+    window.floatAPI?.pushProgress({ busy: true, progress: 0 })
+  }
   try {
-    await ElMessageBox.confirm(
-      `即将把当前读取到的 ${fields.length} 项参数原样全部下发到设备${btV || codeV ? '（其中蓝牙名称/BMS编码以浮窗输入为准）' : ''}，覆盖设备现有参数。确定继续吗？`,
-      '强制下发确认',
-      { type: 'warning', confirmButtonText: '确定下发', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
+    const stillMissing = await fillMissingFieldValues()
+    const fields = allFields.value.filter(canBatchDispatch)
+    if (!fields.length) {
+      ElMessage.warning('暂无可下发的参数（请先读取设备参数）')
+      screenNotifyWarning('暂无可下发的参数（请先读取设备参数）', fromFloat)
+      return
+    }
+    const missingTip = stillMissing > 0 ? `，另有 ${stillMissing} 项读取失败本次跳过` : ''
+    if (!opts?.skipConfirm) {
+      try {
+        await ElMessageBox.confirm(
+          `即将把全量 ${fields.length} 项参数下发到设备${btV || codeV ? '（其中蓝牙名称/BMS编码以浮窗输入为准）' : ''}${missingTip}，覆盖设备现有参数。确定继续吗？`,
+          '强制下发确认',
+          { type: 'warning', confirmButtonText: '确定下发', cancelButtonText: '取消' },
+        )
+      } catch {
+        return
+      }
+    }
+    // 下发前重读芯片类型（不读参数、不动页面 f.value）：换电池不重连时 chipType 仍是
+    // 上一台的缓存，会导致二级过流/短路下拉框用错档位表。重读确保档位解释对应当前电池，
+    // 同时页面模板参数值保持不变，支持用同一套参数反复下发多组电池。
+    j.chipType.value = null
+    await j.readChip()
+    const outcome = await sendFields(injectFullChargeMirror(fields))
+    // 本次实际下发的蓝牙名称（页面字段已被浮窗覆盖值/模板值写入），完成通知与落地记录共用
+    const btField = fields.find((f) => f.key === 'bt-name')
+    const btName = btField && btField.value != null ? String(btField.value) : '—'
+    // 完成通知走屏幕级通知窗（独立置顶小窗，固定屏幕右上角，不自动关闭、须手动关闭）
+    if (outcome.ok + outcome.fail > 0) {
+      window.notifyAPI?.show({
+        title: '强制下发完成',
+        message: `蓝牙名称「${btName}」，共 ${outcome.ok + outcome.fail} 项参数：成功 ${outcome.ok}，失败 ${outcome.fail}。`,
+        type: outcome.fail ? 'warning' : 'success',
+      })
+    }
+    // 落地：把本次强制下发的参数快照写入本地记录库（时间 + 蓝牙名称 + 具体参数）
+    const params: DispatchParam[] = fields.map((f) => ({
+      label: f.label,
+      index: f.index,
+      value: f.value,
+    }))
+    addDispatchRecord({ btName, params })
+    ElMessage.info('已记录本次强制下发到本地历史')
+  } finally {
+    // 收尾：标志复位并直接补推 busy=false。sendFields 内部已置 busy=false，
+    // 但此时 watch 可能因标志已复位而不再触发，必须在这里显式补推，否则浮窗进度条卡住
+    if (floatDispatchActive.value) {
+      floatDispatchActive.value = false
+      if (floatBusyOffTimer !== undefined) {
+        clearTimeout(floatBusyOffTimer)
+        floatBusyOffTimer = undefined
+      }
+      window.floatAPI?.pushProgress({ busy: false, progress: progress.value })
+    }
   }
-  // 下发前重读芯片类型（不读参数、不动页面 f.value）：换电池不重连时 chipType 仍是
-  // 上一台的缓存，会导致二级过流/短路下拉框用错档位表。重读确保档位解释对应当前电池，
-  // 同时页面模板参数值保持不变，支持用同一套参数反复下发多组电池。
-  j.chipType.value = null
-  await j.readChip()
-  const outcome = await sendFields(injectFullChargeMirror(fields))
-  // 完成通知走屏幕级通知窗（独立置顶小窗，固定屏幕右上角，不自动关闭、须手动关闭）
-  if (outcome.ok + outcome.fail > 0) {
-    window.notifyAPI?.show({
-      title: '强制下发完成',
-      message: `共 ${outcome.ok + outcome.fail} 项参数：成功 ${outcome.ok}，失败 ${outcome.fail}。`,
-      type: outcome.fail ? 'warning' : 'success',
-    })
-  }
-  // 落地：把本次强制下发的参数快照写入本地记录库（时间 + 蓝牙名称 + 具体参数）
-  const btField = fields.find((f) => f.key === 'bt-name')
-  const btName = btField && btField.value != null ? String(btField.value) : '—'
-  const params: DispatchParam[] = fields.map((f) => ({
-    label: f.label,
-    index: f.index,
-    value: f.value,
-  }))
-  addDispatchRecord({ btName, params })
-  ElMessage.info('已记录本次强制下发到本地历史')
 }
 
 // 单字段下发（浮窗遥控复用）：蓝牙名称走 0xA2 专用指令、BMS 编码信息走 ASCII 多寄存器写，

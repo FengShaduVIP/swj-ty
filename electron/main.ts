@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from 'electron'
 import { join } from 'path'
 import { SerialManager, type AutoConnectConfig } from './serial'
 import { initAutoUpdater } from './updater'
@@ -74,10 +74,11 @@ function createFloatWindow() {
     floatWindow.loadFile(join(__dirname, '../dist/index.html'), { hash: 'float' })
   }
 
-  // 浮窗打开时补发最近一次模板名与蓝牙名称/BMS编码值（由主窗口推送并在此缓存）
+  // 浮窗打开时补发最近一次模板名、蓝牙名称/BMS编码值与下发进度（由主窗口推送并在此缓存）
   floatWindow.webContents.on('did-finish-load', () => {
     floatWindow!.webContents.send('float:template', floatTemplateName)
     floatWindow!.webContents.send('float:values', floatFieldValues)
+    floatWindow!.webContents.send('float:progress', floatDispatchProgress)
   })
 
   floatWindow.on('closed', () => {
@@ -285,39 +286,77 @@ ipcMain.on('float:pushValues', (_event, v: unknown) => {
 })
 
 // 浮窗的连接/断开由浮窗直接调用 serial:connect / serial:disconnect（主进程串口管理器统一治理），
-// 不再经主窗口中转；此处仅保留需要主窗口状态的强制下发请求。
+// 不再经主窗口中转；此处仅保留需要主窗口执行的请求（强制下发/单参数下发/复位 MCU），
+// 全部静默转发、不唤醒主窗口。
 
-// 浮窗 → 主窗口：强制下发请求。参数状态只存在于主窗口的参数配置页，
-// 浮窗仅作遥控器：唤醒主窗口后转发请求，由主窗弹出确认框并执行下发。
+// 浮窗触发的危险操作确认：用挂在浮窗上的原生消息框（Windows 样式），
+// 不唤醒主窗口——主窗口可能正隐藏/最小化，其内部的 ElMessageBox 用户根本看不到。
+async function confirmOnFloatWindow(title: string, message: string): Promise<boolean> {
+  if (!floatWindow || floatWindow.isDestroyed()) return false
+  const { response } = await dialog.showMessageBox(floatWindow, {
+    type: 'warning',
+    title,
+    message,
+    buttons: ['确定', '取消'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true
+  })
+  return response === 0
+}
+
+// 浮窗 → 主窗口：强制下发请求。确认框挂在浮窗上（原生对话框，不唤醒主窗口），
+// 确认后才静默转发主窗口执行；skipConfirm 告知主窗口跳过页内二次确认。
 // overrides 携带浮窗输入框的蓝牙名称/BMS编码（空串表示无覆盖，按页面/模板值下发）
-ipcMain.handle('float:requestForceWrite', (_event, overrides: unknown) => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
-    const o = (overrides ?? {}) as { btName?: unknown; bmsCode?: unknown }
-    mainWindow.webContents.send('float:forceWrite', {
-      btName: typeof o.btName === 'string' ? o.btName : '',
-      bmsCode: typeof o.bmsCode === 'string' ? o.bmsCode : '',
-    })
-    return { success: true }
+ipcMain.handle('float:requestForceWrite', async (_event, overrides: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { success: false }
+  const o = (overrides ?? {}) as { btName?: unknown; bmsCode?: unknown }
+  const btV = typeof o.btName === 'string' ? o.btName.trim() : ''
+  const codeV = typeof o.bmsCode === 'string' ? o.bmsCode.trim() : ''
+  const overrideTip = btV || codeV ? '（其中蓝牙名称/BMS编码以浮窗输入为准）' : ''
+  const ok = await confirmOnFloatWindow(
+    '强制下发确认',
+    `即将把全量参数下发到设备${overrideTip}，覆盖设备现有参数。确定继续吗？`
+  )
+  if (!ok) return { success: false, canceled: true }
+  if (!mainWindow || mainWindow.isDestroyed()) return { success: false }
+  mainWindow.webContents.send('float:forceWrite', {
+    btName: btV,
+    bmsCode: codeV,
+    skipConfirm: true,
+  })
+  return { success: true }
+})
+
+// 主窗口 → 浮窗：下发进度（浮窗触发的强制下发期间同步 busy/进度百分比，浮窗顶部显示进度条）
+let floatDispatchProgress: { busy: boolean; progress: number } = { busy: false, progress: 0 }
+ipcMain.on('float:pushProgress', (_event, p: unknown) => {
+  const v = p as { busy?: unknown; progress?: unknown } | null
+  floatDispatchProgress = {
+    busy: v?.busy === true,
+    progress: typeof v?.progress === 'number' ? Math.min(100, Math.max(0, Math.round(v.progress))) : 0,
   }
-  return { success: false }
+  if (floatWindow && !floatWindow.isDestroyed()) {
+    floatWindow.webContents.send('float:progress', floatDispatchProgress)
+  }
 })
 
 // 浮窗 → 主窗口：单参数下发（蓝牙名称/BMS编码，携带浮窗输入框的值）与复位 MCU 请求。
-// 字段写入、登录态校验与确认框都在主窗口，浮窗仅遥控：唤醒主窗口后转发动作与值
-ipcMain.on('float:paramAction', (_event, payload: unknown) => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
-    const p = (payload ?? {}) as { action?: unknown; value?: unknown }
-    mainWindow.webContents.send('float:paramAction', {
-      action: typeof p.action === 'string' ? p.action : '',
-      value: typeof p.value === 'string' ? p.value : undefined,
-    })
+// 执行逻辑仍在主窗口（登录态/字段结构都在那边），但不唤醒主窗口；
+// 复位 MCU 先在浮窗上弹原生确认框，确认后带 skipConfirm 转发，跳过主窗口内二次确认
+ipcMain.on('float:paramAction', async (_event, payload: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const p = (payload ?? {}) as { action?: unknown; value?: unknown }
+  const action = typeof p.action === 'string' ? p.action : ''
+  const value = typeof p.value === 'string' ? p.value : undefined
+  if (action === 'reset-mcu') {
+    const ok = await confirmOnFloatWindow('复位 MCU', '确定要复位 MCU 吗？设备将重新启动。')
+    if (!ok) return
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send('float:paramAction', { action, value, skipConfirm: true })
+    return
   }
+  mainWindow.webContents.send('float:paramAction', { action, value })
 })
 
 // ======== 屏幕级通知窗（右上角、置顶所有窗口、不自动关闭） ========
@@ -327,7 +366,8 @@ let notifyWindow: BrowserWindow | null = null
 let pendingNotify: { title: string; message: string; type: string } | null = null
 
 const NOTIFY_W = 380
-const NOTIFY_H = 104
+// 高度含底部「关闭」按钮行（消息一行时下方留白，两行消息 + 按钮也放得下）
+const NOTIFY_H = 132
 
 function createNotifyWindow() {
   const { workArea } = screen.getPrimaryDisplay()

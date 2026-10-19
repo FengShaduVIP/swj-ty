@@ -237,16 +237,33 @@ contextBridge.exposeInMainWorld('floatAPI', {
     ipcRenderer.send('float:pushTemplate', name)
   },
 
-  /** 主窗口：监听浮窗发来的强制下发请求（overrides 为浮窗输入的蓝牙名称/BMS编码） */
-  onForceWrite: (callback: (overrides?: { btName?: string; bmsCode?: string }) => void) => {
-    ipcRenderer.on('float:forceWrite', (_event, overrides?: { btName?: string; bmsCode?: string }) =>
-      callback(overrides))
+  /** 主窗口：浮窗触发的下发进行中，把 busy/进度百分比同步给浮窗进度条 */
+  pushProgress: (p: { busy: boolean; progress: number }): void => {
+    ipcRenderer.send('float:pushProgress', p)
   },
 
-  /** 主窗口：监听浮窗发来的单参数下发/复位 MCU 请求 */
-  onParamAction: (callback: (action: string, value?: string) => void) => {
-    ipcRenderer.on('float:paramAction', (_event, payload: { action: string; value?: string }) =>
-      callback(payload.action, payload.value))
+  /** 主窗口：监听浮窗发来的强制下发请求（overrides 为浮窗输入的蓝牙名称/BMS编码；
+   *  skipConfirm=true 表示浮窗侧已弹原生确认框，主窗口不再二次确认） */
+  onForceWrite: (
+    callback: (overrides?: { btName?: string; bmsCode?: string }, skipConfirm?: boolean) => void
+  ) => {
+    ipcRenderer.on(
+      'float:forceWrite',
+      (_event, payload?: { btName?: string; bmsCode?: string; skipConfirm?: boolean }) =>
+        callback(
+          payload ? { btName: payload.btName, bmsCode: payload.bmsCode } : undefined,
+          payload?.skipConfirm === true
+        )
+    )
+  },
+
+  /** 主窗口：监听浮窗发来的单参数下发/复位 MCU 请求（skipConfirm 同上） */
+  onParamAction: (callback: (action: string, value?: string, skipConfirm?: boolean) => void) => {
+    ipcRenderer.on(
+      'float:paramAction',
+      (_event, payload: { action: string; value?: string; skipConfirm?: boolean }) =>
+        callback(payload.action, payload.value, payload.skipConfirm === true)
+    )
   },
 
   /** 浮窗：监听主窗口推送的蓝牙名称/BMS编码当前值 */
@@ -262,6 +279,11 @@ contextBridge.exposeInMainWorld('floatAPI', {
   /** 浮窗：监听主窗口推送的当前模板名 */
   onTemplate: (callback: (name: string) => void) => {
     ipcRenderer.on('float:template', (_event, name: string) => callback(name))
+  },
+
+  /** 浮窗：监听主窗口推送的下发进度（busy/百分比） */
+  onProgress: (callback: (p: { busy: boolean; progress: number }) => void) => {
+    ipcRenderer.on('float:progress', (_event, p: { busy: boolean; progress: number }) => callback(p))
   }
 })
 

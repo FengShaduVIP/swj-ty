@@ -5,7 +5,8 @@ import { useJbd } from '@/jbd/useJbd'
 
 // 浮动窗口（横向仪表条）：串口字节由主进程广播进来，经 jbdBus → useJbd
 // 单例订阅解析（与主窗口同一套代码），本组件只读取、不发送、不轮询。
-// 「强制下发」经主进程转发给主窗口执行（参数状态与确认框都在主窗口）。
+// 「强制下发」经主进程转发给主窗口执行（参数状态在主窗口）；
+// 确认框由主进程挂在浮窗上的原生对话框完成，不唤醒主窗口。
 const j = useJbd()
 const basicInfo = j.basicInfo
 
@@ -125,9 +126,13 @@ const onLog = (entry: FloatLogEntry) => {
   if (logs.value.length > 50) logs.value.splice(0, logs.value.length - 50)
 }
 
+// ===== 浮窗触发的强制下发进度（主窗口推送；顶部进度条 + ⚡按钮显示百分比） =====
+const dispatch = ref({ busy: false, progress: 0 })
+const onProgress = (p: { busy: boolean; progress: number }) => { dispatch.value = p }
+
 function showMain() { void window.floatAPI.showMain() }
 function close() { void window.floatAPI.close() }
-// 强制下发：蓝牙名称/BMS编码以浮窗输入为准，其余参数按模板/页面值（主窗口确认后执行）
+// 强制下发：蓝牙名称/BMS编码以浮窗输入为准，其余参数按模板/页面值（浮窗弹窗确认后执行，不弹出主窗口）
 function forceWrite() {
   void window.floatAPI.requestForceWrite({ btName: btName.value, bmsCode: bmsCode.value })
 }
@@ -162,6 +167,7 @@ onMounted(() => {
   window.serialAPI?.onError?.(onSerialError)
   window.floatAPI?.onLog?.(onLog)
   window.floatAPI?.onTemplate?.((name) => { templateName.value = name })
+  window.floatAPI?.onProgress?.(onProgress)
   window.floatAPI?.onFieldValues?.((v) => {
     // 仅回填非空值，且输入框聚焦时不覆盖（避免打断正在输入的内容）
     if (v.btName && document.activeElement !== btInputEl.value) btName.value = v.btName
@@ -177,6 +183,11 @@ onUnmounted(() => {
 
 <template>
   <div class="float" :class="{ 'float--alarm': hasAlarm }">
+    <!-- 浮窗触发的强制下发进度条（与参数配置页同款 el-progress：4px 品牌色细条），
+         贴窗口顶边覆盖显示，不占布局、不挡点击 -->
+    <div v-if="dispatch.busy" class="dispatch-progress">
+      <el-progress :percentage="dispatch.progress" :stroke-width="4" color="#1F6FE0" :show-text="false" />
+    </div>
     <header class="float-head">
       <span class="dot" :class="conn.connected ? 'dot--ok' : 'dot--off'" />
       <select
@@ -265,8 +276,8 @@ onUnmounted(() => {
             <span class="l-text">{{ l.content }}</span>
           </div>
         </div>
-        <button class="force-btn" :disabled="!conn.connected" title="强制下发全部参数：蓝牙名称/BMS编码以本浮窗输入为准，其余按模板/页面值（在主窗口确认）" @click="forceWrite">
-          ⚡ 强制下发
+        <button class="force-btn" :disabled="!conn.connected || dispatch.busy" :title="dispatch.busy ? `强制下发进行中 ${dispatch.progress}%` : '强制下发全部参数：蓝牙名称/BMS编码以本浮窗输入为准，其余按模板/页面值（本浮窗弹窗确认，不弹出主窗口）'" @click="forceWrite">
+          {{ dispatch.busy ? `⚡ ${dispatch.progress}%` : '⚡ 强制下发' }}
         </button>
       </div>
     </main>
@@ -298,7 +309,7 @@ onUnmounted(() => {
         下发编码
       </button>
       <span class="foot-sep" />
-      <button class="send-btn send-btn--crit" :disabled="!conn.connected" title="复位 MCU，设备将重启（在主窗口确认）" @click="paramAction('reset-mcu')">
+      <button class="send-btn send-btn--crit" :disabled="!conn.connected || dispatch.busy" title="复位 MCU，设备将重启（本浮窗弹窗确认，不弹出主窗口；下发进行中不可点）" @click="paramAction('reset-mcu')">
         复位MCU
       </button>
     </footer>
@@ -336,6 +347,27 @@ onUnmounted(() => {
 .float--alarm {
   border-color: var(--critical-border);
   box-shadow: var(--glow-critical);
+}
+
+/* ===== 浮窗触发的强制下发进度条（贴顶边覆盖，不占布局不挡点击）===== */
+.dispatch-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  line-height: 0;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+/* 与参数配置页同款：4px 品牌色细条；顶边通栏不做圆角 */
+.dispatch-progress :deep(.el-progress-bar__outer),
+.dispatch-progress :deep(.el-progress-bar__inner) {
+  border-radius: 0;
+  transition: width 0.2s ease;
+}
+.dispatch-progress :deep(.el-progress-bar__outer) {
+  background: var(--brand-bg-subtle);
 }
 
 /* ===== 标题行（28px，保持整条高度恒定；告警收进徽章不另占行）===== */

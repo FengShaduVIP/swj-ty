@@ -178,16 +178,23 @@ interface FloatAPI {
   pushLog: (entry: FloatLogEntry) => void
   /** 主窗口：当前导入模板名变化时同步给浮窗 */
   pushTemplate: (name: string) => void
-  /** 主窗口：监听浮窗发来的强制下发请求（overrides 为浮窗输入的蓝牙名称/BMS编码） */
-  onForceWrite: (callback: (overrides?: { btName?: string; bmsCode?: string }) => void) => void
-  /** 主窗口：监听浮窗发来的单参数下发/复位 MCU 请求 */
-  onParamAction: (callback: (action: string, value?: string) => void) => void
+  /** 主窗口：浮窗触发的下发进行中，把 busy/进度百分比同步给浮窗进度条 */
+  pushProgress: (p: { busy: boolean; progress: number }) => void
+  /** 主窗口：监听浮窗发来的强制下发请求（overrides 为浮窗输入的蓝牙名称/BMS编码；
+   *  skipConfirm=true 表示浮窗侧已弹原生确认框，主窗口不再二次确认） */
+  onForceWrite: (
+    callback: (overrides?: { btName?: string; bmsCode?: string }, skipConfirm?: boolean) => void
+  ) => void
+  /** 主窗口：监听浮窗发来的单参数下发/复位 MCU 请求（skipConfirm 同上） */
+  onParamAction: (callback: (action: string, value?: string, skipConfirm?: boolean) => void) => void
   /** 浮窗：监听主窗口推送的蓝牙名称/BMS编码当前值 */
   onFieldValues: (callback: (v: { btName: string; bmsCode: string }) => void) => void
   /** 浮窗：监听主窗口转发来的通讯日志 */
   onLog: (callback: (entry: FloatLogEntry) => void) => void
   /** 浮窗：监听主窗口推送的当前模板名 */
   onTemplate: (callback: (name: string) => void) => void
+  /** 浮窗：监听主窗口推送的下发进度（busy/百分比） */
+  onProgress: (callback: (p: { busy: boolean; progress: number }) => void) => void
 }
 
 interface Window {
