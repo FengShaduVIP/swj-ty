@@ -28,7 +28,7 @@
               <el-option
                 v-for="port in props.ports"
                 :key="port.path"
-                :label="`${port.path} ${port.manufacturer || ''}`"
+                :label="port.friendlyName ? `${port.friendlyName} · ${port.path}` : port.path"
                 :value="port.path"
               />
             </el-select>

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from 'electron'
+import { execFile } from 'child_process'
 import { join } from 'path'
 import { SerialManager, type AutoConnectConfig } from './serial'
 import { initAutoUpdater } from './updater'
@@ -30,6 +31,9 @@ function createWindow() {
   } else {
     mainWindow.loadFile(join(__dirname, '../dist/index.html'))
   }
+
+  // Web Serial 权限胶水：必须在窗口加载前注册，否则渲染进程 navigator.serial 不可用
+  setupWebSerial(mainWindow)
 
   // 主窗口关闭时浮窗一并关闭（保持"关窗即退出"的现有行为）
   mainWindow.on('closed', () => {
@@ -79,6 +83,8 @@ function createFloatWindow() {
     floatWindow!.webContents.send('float:template', floatTemplateName)
     floatWindow!.webContents.send('float:values', floatFieldValues)
     floatWindow!.webContents.send('float:progress', floatDispatchProgress)
+    floatWindow!.webContents.send('float:serialState', floatSerialState)
+    floatWindow!.webContents.send('float:live', floatLive)
   })
 
   floatWindow.on('closed', () => {
@@ -94,6 +100,68 @@ function broadcast(channel: string, payload: unknown) {
     }
   }
 }
+
+// ======== Web Serial 权限胶水（照搬 SWJ electron/main.cjs）========
+// Chromium 的 navigator.serial 在 Electron 渲染进程里默认没有任何权限，
+// 且 requestPort() 不会自己弹系统选择框，而是向主进程抛 select-serial-port
+// 事件、由主进程 callback(portId) 决定放行哪个端口。缺了这三段注册，
+// 渲染进程的 getPorts() 恒返回空数组（表现为「串口列表是空的」），
+// requestPort() 则永远不 resolve（表现为点了刷新/连接没有任何反应）。
+let preferPortIndex = 0
+let activePortName = ''
+function setupWebSerial(win: BrowserWindow): void {
+  const ses = win.webContents.session
+  ses.setPermissionCheckHandler((_wc, permission) => permission === 'serial')
+  ses.setDevicePermissionHandler(() => true)
+  ses.on('select-serial-port', (event, portList, _wc, callback) => {
+    event.preventDefault()
+    if (!portList || portList.length === 0) {
+      callback('')
+      return
+    }
+    const pick = portList[preferPortIndex] || portList[0]
+    // Web Serial 在渲染进程拿不到 COM 名，这里从主进程的候选列表里带出来
+    activePortName = pick.portName || pick.displayName || ''
+    callback(pick.portId)
+  })
+  ses.on('serial-port-added', () => {})
+  ses.on('serial-port-removed', () => {})
+}
+
+/** 返回最近一次选中端口的系统名（如 COM3），供界面显示 */
+ipcMain.handle('serial:active-port', () => activePortName)
+
+/**
+ * 按 VID/PID 反查系统端口名（COMx）。
+ * Web Serial 只暴露 VID/PID，界面要显示"COM3"只能从注册表枚举：
+ *   HKLM\SYSTEM\CurrentControlSet\Enum\USB\VID_xxxx&PID_xxxx\*\Device Parameters\PortName
+ * 结果按 VID:PID 缓存，一条设备只查一次。
+ */
+const portNameCache = new Map<string, string>()
+function lookupPortName(vid: string, pid: string): Promise<string> {
+  const v = String(vid || '').toUpperCase()
+  const p = String(pid || '').toUpperCase()
+  if (!v || !p) return Promise.resolve('')
+  const key = `${v}:${p}`
+  const cached = portNameCache.get(key)
+  if (cached !== undefined) return Promise.resolve(cached)
+  const regPath = `HKLM\\SYSTEM\\CurrentControlSet\\Enum\\USB\\VID_${v}&PID_${p}`
+  return new Promise((resolve) => {
+    execFile('reg', ['query', regPath, '/s', '/v', 'PortName'], { windowsHide: true, timeout: 2000 }, (err, stdout) => {
+      const name = !err && stdout ? (stdout.match(/PortName\s+REG_SZ\s+(\S+)/) || [])[1] || '' : ''
+      portNameCache.set(key, name)
+      resolve(name)
+    })
+  })
+}
+ipcMain.handle('serial:port-name', (_event, vid: unknown, pid: unknown) =>
+  lookupPortName(typeof vid === 'string' ? vid : '', typeof pid === 'string' ? pid : ''))
+
+/** 让主进程的 select-serial-port 自动选择指向同一序号（渲染层选中哪个就放行哪个） */
+ipcMain.handle('serial:set-preference', (_event, index: unknown) => {
+  preferPortIndex = Number(index) || 0
+  return true
+})
 
 // ======== 串口 IPC 通信 ========
 
@@ -141,9 +209,12 @@ ipcMain.handle('auth:logout', () => {
 // ======== 强制下发确认密码 ========
 // 密码常量只存于主进程，渲染层 bundle 不落明文（devtools 源码/产物中不可见）。
 // 注意：这是业务确认口令而非安全边界——能访问 IPC 的代码仍可调用本句柄做穷举比对。
-const DISPATCH_PWD = 'tyln@1688'
+// SWJ 的检流阻值解锁密码为 Tyln@1688，本项目历史值为小写 tyln@1688，故比较时忽略大小写。
+const DISPATCH_PWD = 'Tyln@1688'
 ipcMain.handle('bms:verifyDispatchPwd', (_event, candidate: unknown) => {
-  return typeof candidate === 'string' && candidate === DISPATCH_PWD
+  if (typeof candidate !== 'string') return false
+  const v = candidate.trim()
+  return v === DISPATCH_PWD || v.toLowerCase() === DISPATCH_PWD.toLowerCase()
 })
 
 // ======== 参数下发记录上传 IPC（accessToken 保持在主进程，渲染进程只传业务数据）========
@@ -365,6 +436,98 @@ ipcMain.on('float:paramAction', async (_event, payload: unknown) => {
 ipcMain.on('float:requestReadAll', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('float:readAll')
+  }
+})
+
+// 浮窗 → 主窗口：串口连接动作。Web Serial 的端口授权绑定在主窗口渲染进程，
+// 浮窗不碰硬件，只把「刷新列表 / 连接 / 断开」回传给主窗口执行。
+ipcMain.on('float:serialAction', (_event, payload: unknown) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('float:serialAction', payload)
+  }
+})
+
+// 主窗口 → 浮窗：串口状态与已授权端口列表（连接/断开/刷新后推送；浮窗打开时补发缓存值，
+// 避免浮窗比主窗口先就绪时拿不到初始状态）
+interface FloatSerialPortEntry {
+  path: string
+  comName: string
+}
+interface FloatSerialState {
+  connected: boolean
+  portLabel: string
+  comName: string
+  baudRate: number
+  ports: FloatSerialPortEntry[]
+}
+let floatSerialState: FloatSerialState = {
+  connected: false,
+  portLabel: '',
+  comName: '',
+  baudRate: 9600,
+  ports: []
+}
+// 主窗口 → 浮窗：实时数据快照（Web Serial 端口由主窗口渲染进程独占，
+// 帧解析只发生在主窗口；浮窗不解析任何字节，只显示推送过来的读数）
+interface FloatLiveSnapshot {
+  totalV: number | null
+  currentA: number | null
+  soc: number | null
+  maxTempC: number | null
+  cellMaxV: number | null
+  cellMinV: number | null
+  cellDeltaMv: number | null
+  cellCount: number
+  protects: string[]
+  alarms: string[]
+}
+const emptyLive = (): FloatLiveSnapshot => ({
+  totalV: null,
+  currentA: null,
+  soc: null,
+  maxTempC: null,
+  cellMaxV: null,
+  cellMinV: null,
+  cellDeltaMv: null,
+  cellCount: 0,
+  protects: [],
+  alarms: []
+})
+let floatLive: FloatLiveSnapshot = emptyLive()
+ipcMain.on('float:pushLive', (_event, s: unknown) => {
+  const v = (s ?? {}) as Partial<FloatLiveSnapshot>
+  const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
+  const strs = (x: unknown): string[] => (Array.isArray(x) ? x.map((i) => String(i ?? '')).filter(Boolean) : [])
+  floatLive = {
+    totalV: num(v.totalV),
+    currentA: num(v.currentA),
+    soc: num(v.soc),
+    maxTempC: num(v.maxTempC),
+    cellMaxV: num(v.cellMaxV),
+    cellMinV: num(v.cellMinV),
+    cellDeltaMv: num(v.cellDeltaMv),
+    cellCount: typeof v.cellCount === 'number' ? Math.max(0, Math.round(v.cellCount)) : 0,
+    protects: strs(v.protects),
+    alarms: strs(v.alarms)
+  }
+  if (floatWindow && !floatWindow.isDestroyed()) {
+    floatWindow.webContents.send('float:live', floatLive)
+  }
+})
+
+ipcMain.on('float:pushSerialState', (_event, s: unknown) => {
+  const v = (s ?? {}) as Partial<FloatSerialState>
+  floatSerialState = {
+    connected: v.connected === true,
+    portLabel: typeof v.portLabel === 'string' ? v.portLabel : '',
+    comName: typeof v.comName === 'string' ? v.comName : '',
+    baudRate: typeof v.baudRate === 'number' ? v.baudRate : 9600,
+    ports: Array.isArray(v.ports)
+      ? v.ports.map((p) => ({ path: String(p?.path ?? ''), comName: String(p?.comName ?? '') }))
+      : []
+  }
+  if (floatWindow && !floatWindow.isDestroyed()) {
+    floatWindow.webContents.send('float:serialState', floatSerialState)
   }
 })
 

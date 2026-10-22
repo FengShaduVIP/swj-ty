@@ -40,7 +40,7 @@
             <el-option
               v-for="port in ports"
               :key="port.path"
-              :label="`${port.path} ${port.manufacturer || ''}`"
+              :label="port.friendlyName ? `${port.friendlyName} · ${port.path}` : port.path"
               :value="port.path"
             />
           </el-select>
@@ -330,7 +330,7 @@ import StatusBadge from './components/StatusBadge.vue'
 import UpdateNotifier from './components/UpdateNotifier.vue'
 import { useUpdater } from './composables/useUpdater'
 import { ui, setConnected, setConnecting, setDisconnected, markCommError, type LogEntry } from './store'
-import { jbdBus } from './jbd/jbd-bus'
+import { serialBus, setTrafficHook, SerialBus } from './jbd/serial-bus'
 import { describeFrame as describeJbdFrame, toHex } from './jbd/jbd-protocol'
 import { useJbd } from './jbd/useJbd'
 import type { AuthSession } from './auth/auth'
@@ -525,29 +525,81 @@ function addLog(type: LogEntry['type'], content: string) {
   if (excess > 0) dataLogs.value.splice(0, excess)
 }
 
-// ===== 串口连接 =====
+// ===== 串口连接（Web Serial，照搬 SWJ） =====
+/** Web Serial 不暴露 COM 名，用 VID/PID 作为端口标识 */
+function portLabel(p: SerialPort): string {
+  const info = p.getInfo()
+  const vid = info.usbVendorId?.toString(16).toUpperCase().padStart(4, '0')
+  const pid = info.usbProductId?.toString(16).toUpperCase().padStart(4, '0')
+  return vid && pid ? `USB VID:${vid} PID:${pid}` : '串口设备'
+}
+
+/** 按 VID/PID 反查系统端口名（COMx），查不到返回空串（照搬 SWJ device.ts comNameOf） */
+async function comNameOf(vid?: number, pid?: number): Promise<string> {
+  const v = vid == null ? '' : vid.toString(16).toUpperCase().padStart(4, '0')
+  const p = pid == null ? '' : pid.toString(16).toUpperCase().padStart(4, '0')
+  if (!v || !p) return ''
+  try {
+    return String((await window.serialWeb?.portName?.(v, p)) || '')
+  } catch {
+    return ''
+  }
+}
+
+/** 枚举已授权串口，并补上 COM 名（界面上直接显示 COM3 而不是一串 VID/PID） */
+async function listGrantedPorts(): Promise<SerialPortInfo[]> {
+  const list = await SerialBus.granted()
+  const mapped: SerialPortInfo[] = []
+  for (const p of list) {
+    const comName = await comNameOf(p.usbVendorId, p.usbProductId)
+    mapped.push({ path: p.label, friendlyName: comName })
+  }
+  return mapped
+}
+
 async function handleConnect(config: SerialConnectConfig) {
   setConnecting()
   try {
-    await window.serialAPI.connect(config)
-    portPath.value = config.path
-    setConnected(config.path, config.baudRate)
-    addLog('info', `串口已连接: ${config.path} @ ${config.baudRate}bps`)
+    const granted = await navigator.serial.getPorts()
+    let port = granted.find((p) => portLabel(p) === config.path) ?? granted[0]
+    if (!port) {
+      // 首次使用：主进程的 select-serial-port 自动放行（无系统选择框）
+      const picked = await SerialBus.request()
+      if (!picked) throw new Error('未选择串口')
+      port = picked
+    }
+    // 让主进程的自动选择偏好与本次选中对齐（后续 requestPort 放行同一设备）
+    const idx = granted.indexOf(port)
+    if (idx >= 0) await window.serialWeb?.setPreference?.(idx)
+    await serialBus.open(port, {
+      baudRate: config.baudRate,
+      dataBits: 8,
+      stopBits: 1,
+      parity: 'none',
+    })
+    const label = portLabel(port)
+    portPath.value = label
+    setConnected(label, config.baudRate)
+    addLog('info', `串口已连接: ${label} @ ${config.baudRate}bps`)
+    pushSerialState()
+    startVerify(false)
   } catch (err: any) {
     setDisconnected()
     ElMessage.error('连接失败: ' + (err.message || err))
     addLog('error', `连接失败: ${err.message || err}`)
+    pushSerialState()
   }
 }
 async function handleDisconnect() {
   try {
-    await window.serialAPI.disconnect()
+    await serialBus.close()
     setDisconnected()
     portPath.value = ''
     addLog('info', '串口已断开')
   } catch (err: any) {
     ElMessage.error('断开失败: ' + (err.message || err))
   }
+  pushSerialState()
 }
 function onTopConnect() {
   if (!topPort.value) return
@@ -561,38 +613,47 @@ function onTopConnect() {
 }
 async function handleRefreshPorts(): Promise<SerialPortInfo[]> {
   try {
-    const list = await window.serialAPI.listPorts()
-    ports.value = list
-    addLog('info', `刷新串口列表: 找到 ${list.length} 个串口`)
-    return list
+    let mapped = await listGrantedPorts()
+    // 与 SWJ 一致：没有任何已授权串口时，主动触发一次 requestPort 完成授权
+    // （主进程 select-serial-port 自动放行，不弹系统选择框）
+    if (!mapped.length) {
+      const picked = await SerialBus.request()
+      if (picked) mapped = await listGrantedPorts()
+    }
+    ports.value = mapped
+    addLog('info', `刷新串口列表: 找到 ${mapped.length} 个已授权串口`)
+    pushSerialState()
+    return mapped
   } catch (err: any) {
     ElMessage.error('获取串口列表失败: ' + (err.message || err))
     ports.value = []
+    pushSerialState()
     return []
   }
 }
 
-async function handleSend(data: number[]) {
-  // 最终防线：若连接已断开，直接丢弃，不再调用底层 send 抛错污染日志。
-  // 因为轮询器/自动连接的状态同步存在微小竞态，可能在本帧仍认为已连接。
-  if (!connected.value) return
+/** 启动时静默枚举（不触发 requestPort），并把初始状态推给浮窗 */
+async function initPortList() {
   try {
-    await window.serialAPI.send(data)
-    const hex = toHex(data)
-    const desc = describeJbdFrame(data)
-    const prefix = desc ? `${desc}-->主机发送：` : '发送: '
-    addLog('send', `${prefix}${hex}`)
-  } catch (err: any) {
-    const msg = err?.message || String(err)
-    // 已明确是"未连接"类的异常时，不再重复报红；其它真实发送错误仍保留。
-    if (msg.includes('未连接') || msg.includes('Serial port not open') || msg.includes('Closed')) {
-      addLog('info', `发送忽略: ${msg}`)
-      return
-    }
-    ElMessage.error('发送失败: ' + msg)
-    addLog('error', `发送失败: ${msg}`)
+    ports.value = await listGrantedPorts()
+  } catch {
+    /* 枚举失败保留空列表，用户点刷新时重试 */
   }
+  pushSerialState()
 }
+
+/** 串口状态推给浮窗（端口由本窗口独占，浮窗的端口下拉/连接按钮只是指令入口） */
+function pushSerialState() {
+  window.floatAPI?.pushSerialState?.({
+    connected: connected.value,
+    portLabel: portPath.value,
+    comName: ports.value.find((p) => p.path === portPath.value)?.friendlyName ?? '',
+    baudRate: ui.baudRate,
+    ports: ports.value.map((p) => ({ path: p.path, comName: p.friendlyName ?? '' })),
+  })
+}
+
+// 发送与收发日志统一由 serialBus 的流量钩子负责（见 onMounted 的 setTrafficHook）
 
 function goMonitor() { active.value = 'monitor' }
 
@@ -628,12 +689,30 @@ function loadAuto(): AutoCfg {
 const autoconn = ref<AutoCfg>(loadAuto())
 
 function saveAuto() { localStorage.setItem(AUTO_KEY, JSON.stringify(autoconn.value)) }
-function applyAutoConnect() {
-  if (autoconn.value.enabled) {
-    window.serialAPI?.setAutoConnect?.(true, { ...autoconn.value })
-  } else {
-    window.serialAPI?.setAutoConnect?.(false)
+/**
+ * 自动连接：Web Serial 无法后台守护插拔（端口授权绑定在渲染进程），
+ * 仅在启动时尝试打开已授权的第一个端口。
+ */
+async function autoConnectOnStartup() {
+  if (!autoconn.value.enabled) return
+  if (!SerialBus.supported()) return
+  try {
+    const granted = await navigator.serial.getPorts()
+    if (!granted.length) return
+    await handleConnect({
+      path: portLabel(granted[0]),
+      baudRate: autoconn.value.baudRate,
+      dataBits: 8,
+      stopBits: 1,
+      parity: 'none',
+    })
+  } catch {
+    /* 启动自动连接失败不打断启动流程 */
   }
+}
+function applyAutoConnect() {
+  // 配置持久化到 localStorage，由 autoConnectOnStartup 在启动时消费
+  saveAuto()
 }
 function onSettingsClose() {
   saveAuto()
@@ -641,7 +720,7 @@ function onSettingsClose() {
 }
 
 // ===== 连接成功后验证 BMS 应答再跳转实时监测页 =====
-const { basicInfo } = useJbd()
+const { basicInfo, cellVoltages, cellMax, cellMin, activeProtects, activeAlarms } = useJbd()
 const pendingVerify = ref(false)
 const pendingJump = ref(false)
 let verifyTimer: ReturnType<typeof setTimeout> | null = null
@@ -671,20 +750,29 @@ watch(basicInfo, (v) => {
   }
 })
 
-function handleStatusChange(status: SerialStatus) {
-  if (status.connected) {
-    portPath.value = status.portPath || ''
-    setConnected(status.portPath || '', ui.baudRate)
-    jbdBus.setConnected(true)
-    // 仅自动连接成功才验证后跳转；手动连接只验证、不跳转
-    startVerify(!!status.auto)
-  } else {
-    setDisconnected()
-    jbdBus.setConnected(false)
-    pendingVerify.value = false
-    pendingJump.value = false
+// ===== 浮窗实时快照 =====
+// Web Serial 端口授权只在本渲染进程，浮窗拿不到任何字节，实时数据必须靠推送。
+// 轮询周期 2s，watch 到快照变化才推一次，未开浮窗时主进程直接丢弃。
+const floatLive = computed<FloatLiveSnapshot>(() => {
+  const l = ui.live
+  const hasCells = cellVoltages.value.length > 0
+  return {
+    totalV: l.totalVoltage_V,
+    currentA: l.current_A,
+    soc: l.soc,
+    maxTempC: l.maxTemp_C,
+    cellMaxV: hasCells ? cellMax.value / 1000 : null,
+    cellMinV: hasCells ? cellMin.value / 1000 : null,
+    cellDeltaMv: hasCells ? cellMax.value - cellMin.value : null,
+    cellCount: cellVoltages.value.length,
+    protects: activeProtects.value.slice(),
+    alarms: activeAlarms.value.slice(),
   }
-}
+})
+watch(floatLive, (s) => window.floatAPI?.pushLive?.(s))
+
+// 连接建立后的验证由 handleConnect 触发 startVerify；不再有主进程状态广播
+
 
 // ===== 顶部状态栏关键读数（来自 store.ui.live）=====
 const readouts = computed(() => {
@@ -728,23 +816,23 @@ onMounted(() => {
   refreshAuthStatus()
   // 启用自动连接时先停留在「设备连接」页，连接验证成功后再跳转到实时监测页
   if (autoconn.value.enabled) active.value = 'connect'
-  // 关键：把帧总线接到真实串口。否则 jbdBus.send/sendAck 发现 sender 为 null，
-  // 会立即返回超时帧，表现为「发送数据没有成功 / 读不到应答」。
-  jbdBus.setSender(handleSend)
-
-  window.serialAPI?.onData?.((data: number[]) => {
-    const bytes = Array.from(data)
-    addLog('recv', `接收: ${toHex(bytes)}`)
-    // 把原始字节喂给 JBD 帧总线
-    jbdBus.feed(bytes)
-  })
-  window.serialAPI?.onError?.((error: string) => {
-    addLog('error', error)
-    markCommError()
-  })
-  window.serialAPI?.onStatusChange?.((status: SerialStatus) => {
-    handleStatusChange(status)
-  })
+  // 启动时静默枚举已授权串口（不触发 requestPort：无用户手势时必然失败，
+  // 授权交给「刷新」/「连接」按钮的用户点击完成，与 SWJ 的 onMounted→listPorts 一致）
+  void initPortList()
+// 收发流量 → 通讯日志（等价于原 serialAPI.onData 的日志表现）
+setTrafficHook((dir, bytes) => {
+  const hex = toHex(bytes)
+  if (dir === 'tx') {
+    const desc = describeJbdFrame(bytes)
+    addLog('send', desc ? `${desc}-->主机发送：${hex}` : `发送: ${hex}`)
+  } else {
+    addLog('recv', `接收: ${hex}`)
+  }
+})
+serialBus.onError((e) => {
+  addLog('error', e.message)
+  markCommError()
+})
 
   // 浮窗「强制下发」按钮 → 主进程在浮窗上弹原生确认框（不唤醒本窗口）→ 确认后转交参数配置页
   // 执行完整下发流程（overrides 为浮窗输入框的蓝牙名称/BMS编码，forceWriteAll 内会先覆盖页面字段；
@@ -772,15 +860,41 @@ onMounted(() => {
     void paramConfigRef.value?.readAll({ fromFloat: true })
   })
 
-  // 按持久化的配置启动自动连接（若启用），在监听器就绪后再开启
-  applyAutoConnect()
+  // 浮窗的端口下拉/连接/断开按钮 → 转为本窗口的串口动作（端口授权只在本渲染进程）
+  window.floatAPI?.onSerialAction?.(async (a) => {
+    if (a.action === 'list') {
+      await handleRefreshPorts()
+      return
+    }
+    if (a.action === 'disconnect') {
+      await handleDisconnect()
+      return
+    }
+    // connect：尚无任何已授权串口时，requestPort 需要本窗口的用户手势，
+    // 无法由浮窗代点——唤醒主窗口并提示用户在此点一次「刷新」或「连接」
+    if (!ports.value.length && !a.path) {
+      addLog('error', '尚无已授权串口：请在主界面点一次「刷新」或「连接」完成授权')
+      void window.floatAPI.showMain()
+      return
+    }
+    await handleConnect({
+      path: a.path || topPort.value,
+      baudRate: a.baudRate || 9600,
+      dataBits: 8,
+      stopBits: 1,
+      parity: 'none',
+    })
+  })
+
+  // 按持久化的配置启动自动连接（若启用），在钩子就绪后再执行
+  void autoConnectOnStartup()
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', onKey)
   clearAuthExpiryTimer()
   if (tickTimer) clearInterval(tickTimer)
-  window.serialAPI?.removeAllListeners?.()
-  jbdBus.clear()
+  setTrafficHook(null)
+  void serialBus.close()
 })
 </script>
 

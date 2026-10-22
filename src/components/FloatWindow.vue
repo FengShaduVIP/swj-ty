@@ -1,53 +1,46 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { jbdBus } from '@/jbd/jbd-bus'
-import { useJbd } from '@/jbd/useJbd'
+import { computed, onMounted, ref, watch } from 'vue'
 
-// 浮动窗口（横向仪表条）：串口字节由主进程广播进来，经 jbdBus → useJbd
-// 单例订阅解析（与主窗口同一套代码），本组件只读取、不发送、不轮询。
-// 「强制下发」经主进程转发给主窗口执行（参数状态在主窗口）；
-// 确认框由主进程挂在浮窗上的原生对话框完成，不唤醒主窗口。
-const j = useJbd()
-const basicInfo = j.basicInfo
-
+// 浮动置顶小窗：串口由主窗口渲染进程独占（Web Serial 端口授权只在一个渲染进程），
+// 浮窗不碰硬件、不解析帧。实时数据、串口状态、日志全部由主窗口经主进程推送过来；
+// 「读取全部 / 强制下发 / 单参数下发」则是把指令回传给主窗口执行。
 const conn = ref<SerialStatus>({ connected: false })
 
 const fmt = (v: number | null | undefined, d = 2) =>
   (v == null || !Number.isFinite(v)) ? '--' : v.toFixed(d)
 
-const totalV = computed(() => basicInfo.value ? basicInfo.value.totalVoltage_mV / 1000 : null)
-const currentA = computed(() => basicInfo.value ? basicInfo.value.current_mA / 1000 : null)
-const soc = computed(() => basicInfo.value ? basicInfo.value.rsoc : null)
-const maxTempC = computed(() => {
-  const t = basicInfo.value?.temperatures_C
-  return t && t.length ? Math.max(...t) : null
+// ===== 实时数据快照（主窗口解析后推送，浮窗只显示）=====
+const live = ref<FloatLiveSnapshot>({
+  totalV: null, currentA: null, soc: null, maxTempC: null,
+  cellMaxV: null, cellMinV: null, cellDeltaMv: null, cellCount: 0,
+  protects: [], alarms: [],
 })
-const hasCells = computed(() => j.cellVoltages.value.length > 0)
-const cellMaxV = computed(() => hasCells.value ? j.cellMax.value / 1000 : null)
-const cellMinV = computed(() => hasCells.value ? j.cellMin.value / 1000 : null)
-const cellDeltaMv = computed(() =>
-  hasCells.value ? j.cellMax.value - j.cellMin.value : null
-)
+const totalV = computed(() => live.value.totalV)
+const currentA = computed(() => live.value.currentA)
+const soc = computed(() => live.value.soc)
+const maxTempC = computed(() => live.value.maxTempC)
+const hasCells = computed(() => live.value.cellCount > 0)
+const cellMaxV = computed(() => live.value.cellMaxV)
+const cellMinV = computed(() => live.value.cellMinV)
+const cellDeltaMv = computed(() => live.value.cellDeltaMv)
 
-const alarmCount = computed(() => j.activeProtects.value.length + j.activeAlarms.value.length)
+const alarmCount = computed(() => live.value.protects.length + live.value.alarms.length)
 const hasAlarm = computed(() => alarmCount.value > 0)
 // 头部内联显示的告警/保护明细（过长省略号截断，悬停看全量）
 const alarmInfo = computed(() => {
   if (!hasAlarm.value) return ''
   const parts: string[] = []
-  if (j.activeProtects.value.length) parts.push(`保护 ${j.activeProtects.value.length}`)
-  if (j.activeAlarms.value.length) parts.push(`告警 ${j.activeAlarms.value.length}`)
+  if (live.value.protects.length) parts.push(`保护 ${live.value.protects.length}`)
+  if (live.value.alarms.length) parts.push(`告警 ${live.value.alarms.length}`)
   return `${parts.join(' · ')}:${alarmDetail.value}`
 })
-const alarmDetail = computed(() =>
-  [...j.activeProtects.value, ...j.activeAlarms.value].join('、')
-)
+const alarmDetail = computed(() => [...live.value.protects, ...live.value.alarms].join('、'))
 
 // ===== 当前导入的模板名（主窗口参数配置页推送，浮窗打开时主进程补发缓存值）=====
 const templateName = ref('')
 
-// ===== 串口连接（浮窗直接调用主进程串口 IPC；主窗口经状态广播保持同步）=====
-const ports = ref<SerialPortInfo[]>([])
+// ===== 串口连接（Web Serial 端口授权绑定在主窗口渲染进程，浮窗只发指令、收状态推送）=====
+const ports = ref<FloatSerialPortEntry[]>([])
 const selectedPort = ref('')
 const baud = ref(9600)
 
@@ -60,39 +53,44 @@ function clearPending() {
 function armPending() {
   connPending.value = true
   if (pendingTimer) clearTimeout(pendingTimer)
-  // 状态广播/错误事件到达时提前清除；超时兜底防状态丢失卡死按钮
+  // 主窗口执行后一定会推回串口状态（onSerialState 里清除）；超时兜底防状态丢失卡死按钮
   pendingTimer = window.setTimeout(clearPending, 3000)
 }
 
-function portLabel(p: SerialPortInfo): string {
-  return p.friendlyName ? `${p.path} · ${p.friendlyName}` : p.path
+function portLabel(p: FloatSerialPortEntry): string {
+  return p.comName ? `${p.comName} · ${p.path}` : p.path
 }
 
-async function refreshPorts() {
-  try {
-    ports.value = await window.serialAPI?.listPorts() ?? []
-    // 保留仍存在的选中项；否则优先当前连接的端口，再退到第一个可用口
-    if (!ports.value.some((p) => p.path === selectedPort.value)) {
-      selectedPort.value = conn.value.connected && conn.value.portPath
-        ? conn.value.portPath
-        : (ports.value[0]?.path ?? '')
-    }
-  } catch { /* 枚举失败保留现状，下次刷新重试 */ }
+function refreshPorts() {
+  window.floatAPI?.requestSerialAction({ action: 'list' })
 }
 
-async function toggleConn() {
+function toggleConn() {
   if (connPending.value) return
   if (conn.value.connected) {
     armPending()
-    try { await window.serialAPI?.disconnect() } catch { clearPending() }
+    window.floatAPI?.requestSerialAction({ action: 'disconnect' })
     return
   }
-  if (!selectedPort.value) return
   armPending()
-  try {
-    // 失败时 serialManager 广播 serial:error → onSerialError 清除 pending，原因进日志条
-    await window.serialAPI?.connect({ path: selectedPort.value, baudRate: baud.value })
-  } catch { clearPending() }
+  window.floatAPI?.requestSerialAction({
+    action: 'connect',
+    path: selectedPort.value || undefined,
+    baudRate: baud.value,
+  })
+}
+
+// 主窗口推送的串口状态：连接态 + 已授权端口列表（端口由主窗口独占，这里只做展示与指令入口）
+const onSerialState = (s: FloatSerialState) => {
+  conn.value = { connected: s.connected, portPath: s.portLabel || s.comName, baudRate: s.baudRate }
+  clearPending()
+  ports.value = s.ports
+  if (s.connected) {
+    if (s.portLabel) selectedPort.value = s.portLabel
+    if (s.baudRate) baud.value = s.baudRate
+  } else if (s.ports.length && !s.ports.some((p) => p.path === selectedPort.value)) {
+    selectedPort.value = s.ports[0].path
+  }
 }
 
 // ===== 通讯日志（与参数配置页 commStrip 同源同格式：主窗口 addLog 逐条转发）=====
@@ -109,17 +107,8 @@ function toggleAlwaysOnTop() {
   void window.floatAPI.setAlwaysOnTop(alwaysOnTop.value)
 }
 
-const onSerialData = (bytes: number[]) => jbdBus.feed(bytes)
-const onStatusChange = (s: SerialStatus) => {
-  conn.value = s
-  clearPending()
-  if (s.connected) {
-    // 同步端口显示与波特率（自动连接/其他窗口建立的连接也保持一致）
-    if (s.portPath) selectedPort.value = s.portPath
-    if (s.baudRate) baud.value = s.baudRate
-  }
-}
-const onSerialError = () => clearPending()
+// Web Serial 迁移后，浮窗不再直接接触串口：帧解析与轮询统一在主窗口进行，
+// 浮窗依靠主窗口推送的字段值与串口状态显示；端口下拉/连接/断开均为指令入口。
 const onLog = (entry: FloatLogEntry) => {
   logs.value.push(entry)
   // 浮窗只需展示最近若干条，截断防数组无限增长
@@ -154,21 +143,11 @@ watch(btName, (v) => localStorage.setItem('float_bt_name', v))
 watch(bmsCode, (v) => localStorage.setItem('float_bms_code', v))
 
 onMounted(() => {
-  // 打开浮窗时连接可能已建立，先同步当前状态与端口/波特率，再订阅增量事件
-  void window.serialAPI?.getStatus?.().then(async (s) => {
-    conn.value = s
-    if (s.portPath) selectedPort.value = s.portPath
-    if (s.baudRate) baud.value = s.baudRate
-    // 未连接时以自动连接配置的波特率为准（与主窗口「设置」一致）
-    if (!s.connected) {
-      const cfg = await window.serialAPI?.getAutoConnect?.()
-      if (cfg?.baudRate) baud.value = cfg.baudRate
-    }
-    void refreshPorts()
-  })
-  window.serialAPI?.onData?.(onSerialData)
-  window.serialAPI?.onStatusChange?.(onStatusChange)
-  window.serialAPI?.onError?.(onSerialError)
+  // 串口状态由主窗口经主进程推送（打开浮窗时主进程会补发最近一次缓存值），
+  // 之后主窗口每次连接/断开/刷新都会推新状态过来
+  window.floatAPI?.onSerialState?.(onSerialState)
+  // 实时读数：主窗口解析出数据后逐次推送（本窗口不解析任何串口字节）
+  window.floatAPI?.onLive?.((s) => { live.value = s })
   window.floatAPI?.onLog?.(onLog)
   window.floatAPI?.onTemplate?.((name) => { templateName.value = name })
   window.floatAPI?.onProgress?.(onProgress)
@@ -183,10 +162,7 @@ onMounted(() => {
   })
 })
 
-onUnmounted(() => {
-  // removeAllListeners 只作用于本窗口的 ipcRenderer，不影响主窗口
-  window.serialAPI.removeAllListeners()
-})
+// 浮窗的 IPC 监听随窗口销毁一并回收（ipcRenderer 绑在本窗口进程内，无需手动移除）
 </script>
 
 <template>
@@ -267,7 +243,7 @@ onUnmounted(() => {
         <span class="m-label">单体最低</span>
         <span class="c-num">{{ hasCells ? fmt(cellMinV, 3) : '--' }}</span>
       </div>
-      <div class="cell-stat" :title="hasCells ? `共 ${j.cellVoltages.value.length} 节单体` : ''">
+      <div class="cell-stat" :title="hasCells ? `共 ${live.cellCount} 节单体` : ''">
         <span class="m-label">压差 mV</span>
         <span class="c-num c-num--delta">{{ cellDeltaMv ?? '--' }}</span>
       </div>

@@ -151,6 +151,50 @@ interface NotifyAPI {
   onShow: (callback: (p: { title: string; message: string; type: string }) => void) => void
 }
 
+/** Web Serial 辅助能力（注入自 preload.ts）：端口授权在主窗口渲染进程，主进程只做注册表反查 */
+interface SerialWebAPI {
+  /** 按 VID/PID 反查系统端口名（COMx） */
+  portName: (vid: string, pid: string) => Promise<string>
+  /** 让主进程的 select-serial-port 自动选择指向同一序号 */
+  setPreference: (index: number) => Promise<boolean>
+  /** 最近一次选中端口的系统名（如 COM3） */
+  activePort: () => Promise<string>
+}
+
+/** 浮窗 ↔ 主窗口的串口状态载荷（Web Serial 端口由主窗口渲染进程独占） */
+interface FloatSerialPortEntry {
+  path: string
+  comName: string
+}
+
+interface FloatSerialState {
+  connected: boolean
+  portLabel: string
+  comName: string
+  baudRate: number
+  ports: FloatSerialPortEntry[]
+}
+
+/** 浮窗实时数据快照（主窗口解析后推送，浮窗不解析帧） */
+interface FloatLiveSnapshot {
+  totalV: number | null
+  currentA: number | null
+  soc: number | null
+  maxTempC: number | null
+  cellMaxV: number | null
+  cellMinV: number | null
+  cellDeltaMv: number | null
+  cellCount: number
+  protects: string[]
+  alarms: string[]
+}
+
+interface SerialActionPayload {
+  action: 'list' | 'connect' | 'disconnect'
+  path?: string
+  baudRate?: number
+}
+
 /** 浮动窗口控制（注入自 preload.ts） */
 interface FloatLogEntry {
   id: number
@@ -199,10 +243,23 @@ interface FloatAPI {
   onProgress: (callback: (p: { busy: boolean; progress: number; kind?: 'read' | 'write' }) => void) => void
   /** 主窗口：监听浮窗发来的读取全部请求 */
   onReadAll: (callback: () => void) => void
+  /** 浮窗 → 主窗口：串口连接动作（端口授权在主窗口渲染进程，浮窗只发指令） */
+  requestSerialAction: (action: SerialActionPayload) => void
+  /** 主窗口 → 浮窗：串口状态与已授权端口列表 */
+  pushSerialState: (s: FloatSerialState) => void
+  /** 主窗口 → 浮窗：实时数据快照（电压/电流/SOC/温度/单体/告警） */
+  pushLive: (s: FloatLiveSnapshot) => void
+  /** 浮窗：监听主窗口推送的串口状态与端口列表 */
+  onSerialState: (callback: (s: FloatSerialState) => void) => void
+  /** 浮窗：监听主窗口推送的实时数据快照 */
+  onLive: (callback: (s: FloatLiveSnapshot) => void) => void
+  /** 主窗口：监听浮窗发来的串口连接动作 */
+  onSerialAction: (callback: (action: SerialActionPayload) => void) => void
 }
 
 interface Window {
   serialAPI: SerialAPI
+  serialWeb: SerialWebAPI
   updaterAPI: UpdaterAPI
   shellAPI: ShellAPI
   authAPI: BackendAuthAPI

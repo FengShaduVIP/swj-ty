@@ -6,7 +6,8 @@ import {
   parseBasicInfo, parseCellVoltages, parseHardwareVersion, parseProtectCounts,
   PROTECT_BIT, ALARM_BIT, type BasicInfo, type Frame,
 } from '@/jbd/jbd-protocol'
-import { jbdBus } from '@/jbd/jbd-bus'
+import { serialBus } from '@/jbd/serial-bus'
+import { paramState } from '@/jbd/param-state'
 import { CHIP_TYPES } from '@/jbd/jbd-params'
 import { ui, pushSample } from '@/store'
 import { POLL_INTERVAL_MS } from '@/constants'
@@ -111,27 +112,35 @@ const protectList = computed(() => [
 ])
 
 // ===== 发送 / 帧分发（单例订阅）=====
+/** 一问一答：失败/超时返回 null（调用方按无应答处理） */
+async function request(frame: number[], cmd: number, timeoutMs = 1500): Promise<Frame | null> {
+  try {
+    return await serialBus.transact(frame, cmd, timeoutMs, 1)
+  } catch {
+    return null
+  }
+}
+
 function send(frame: number[]) {
   if (!connected.value) { ElMessage.warning('请先连接串口'); return }
-  jbdBus.send(frame)
+  void serialBus.sendRaw(frame).catch(() => {})
 }
-function pollSend(frame: number[]) { if (connected.value) jbdBus.send(frame) }
+function pollSend(frame: number[]) {
+  if (connected.value && !paramState.busy) void serialBus.sendRaw(frame).catch(() => {})
+}
 
 function readBasic() { send(buildReadBasicInfo()) }
 function readCells() { send(buildReadCellVoltages()) }
 function readHw() { send(buildReadHardwareVersion()) }
 function readProtect() { send(buildReadProtectCounts()) }
 // 芯片类型决定二级过流/短路保护下拉框的档位物理量，必须可靠读到。
-// 嘉百达等设备在串口刚打开后首帧常被丢弃，且连接初期发送器未必就绪
-// （jbdBus.setConnected(true) 由主进程 onStatusChange 异步触发，晚于 ui.conn 置位），
-// 故读取失败需补发重试（与 initAfterConnect 同源策略），避免首帧/竞态丢帧导致
-// 下拉框始终拿不到芯片方案而误显示 0A。
+// 嘉百达等设备在串口刚打开后首帧常被丢弃，故读取失败需补发重试。
 async function readChip() {
   if (!connected.value) return
   for (let attempt = 0; attempt < 3; attempt++) {
     if (chipType.value != null || !connected.value) return
-    const f = await jbdBus.sendAck(buildReadChipType())
-    if (!f.timeout && f.valid && f.status === 0x00) return
+    const f = await request(buildReadChipType(), 0x00)
+    if (f && f.valid && f.status === 0x00) return
     await new Promise((r) => setTimeout(r, 400))
   }
 }
@@ -159,17 +168,7 @@ watch(batchBusy, (busy) => {
   }
 })
 
-// 链路熔断联动：连续多次无应答时暂停自动轮询（错误日志/toast 不再刷屏），
-// 收到任意有效应答即自动恢复轮询。暂停期间 JbdPanel 的 5s 保护事件读取
-// 仍在发帧，客观上充当链路探针；用户手动读取亦可触发恢复。
-jbdBus.onLinkChange((down) => {
-  if (down) {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-    ElMessage.error('连续多次通信无应答，已暂停自动轮询；通信恢复后将自动继续')
-  } else {
-    startPoll()
-  }
-})
+// 链路熔断已随 jbdBus 退役：serialBus 采用一问一答 + 超时重试，不再维护连续超时熔断状态。
 
 // ===== 连接后统一初始化序列（串行，避免多路并发涌队列）=====
 // 此前连接建立瞬间有三路并发：App.startVerify 3×readBasic、JbdPanel.refreshAll
@@ -184,17 +183,17 @@ async function initAfterConnect(): Promise<void> {
     //    App.startVerify 的 watch(basicInfo) 据此判定「连接成功」）
     for (let i = 0; i < 3; i++) {
       if (!connected.value) return
-      const f = await jbdBus.sendAck(buildReadBasicInfo())
-      if (!f.timeout && f.valid && f.status === 0x00) break
+      const f = await request(buildReadBasicInfo(), 0x03)
+      if (f && f.valid && f.status === 0x00) break
       await new Promise((r) => setTimeout(r, 400))
     }
     // 2) 芯片类型（若未知；决定二级过流/短路档位物理量）
     if (chipType.value == null) await readChip()
     // 3) 其余遥测
     if (connected.value) {
-      jbdBus.send(buildReadCellVoltages())
-      jbdBus.send(buildReadHardwareVersion())
-      jbdBus.send(buildReadProtectCounts())
+      void serialBus.sendRaw(buildReadCellVoltages()).catch(() => {})
+      void serialBus.sendRaw(buildReadHardwareVersion()).catch(() => {})
+      void serialBus.sendRaw(buildReadProtectCounts()).catch(() => {})
     }
   } finally {
     initRunning = false
@@ -244,8 +243,16 @@ function handleFrame(f: Frame) {
   }
 }
 
-let busSub: (() => void) | null = null
-if (!busSub) busSub = jbdBus.onFrame((f) => handleFrame(f))
+// 参数层 busy 变化时暂停/恢复轮询（整包读写期间不与轮询抢总线）
+watch(() => paramState.busy, (busy) => {
+  if (busy) {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  } else {
+    startPoll()
+  }
+})
+
+serialBus.onFrame((f) => handleFrame(f))
 
 // 连接建立后执行统一初始化序列（含读芯片类型）。
 // 芯片方案决定二级过流/短路保护下拉框的物理量档位，缺它会导致下拉全显示 0.00A 而误导用户。

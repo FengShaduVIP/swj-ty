@@ -141,6 +141,21 @@ contextBridge.exposeInMainWorld('serialAPI', {
   }
 })
 
+// 暴露 Web Serial 辅助能力（端口授权在主窗口渲染进程，主进程只提供注册表反查与自动选择偏好）
+contextBridge.exposeInMainWorld('serialWeb', {
+  /** 按 VID/PID 反查系统端口名（COMx）：Web Serial 只暴露 VID/PID，界面显示"COM3"靠它 */
+  portName: (vid: string, pid: string): Promise<string> =>
+    ipcRenderer.invoke('serial:port-name', vid, pid),
+
+  /** 让主进程的 select-serial-port 自动选择指向同一序号（选中哪个放行哪个） */
+  setPreference: (index: number): Promise<boolean> =>
+    ipcRenderer.invoke('serial:set-preference', index),
+
+  /** 最近一次选中端口的系统名（如 COM3） */
+  activePort: (): Promise<string> =>
+    ipcRenderer.invoke('serial:active-port')
+})
+
 // 暴露屏幕级通知能力（独立透明置顶小窗，固定屏幕右上角，不自动关闭）
 contextBridge.exposeInMainWorld('notifyAPI', {
   /** 显示通知（替换当前可见通知），须手动关闭 */
@@ -227,6 +242,51 @@ contextBridge.exposeInMainWorld('floatAPI', {
     ipcRenderer.send('float:requestReadAll')
   },
 
+  /** 浮窗 → 主窗口：串口连接动作（端口授权在主窗口渲染进程，浮窗只发指令） */
+  requestSerialAction: (action: { action: 'list' | 'connect' | 'disconnect'; path?: string; baudRate?: number }): void => {
+    ipcRenderer.send('float:serialAction', action)
+  },
+
+  /** 主窗口 → 浮窗：串口状态与已授权端口列表 */
+  pushSerialState: (s: {
+    connected: boolean
+    portLabel: string
+    comName: string
+    baudRate: number
+    ports: { path: string; comName: string }[]
+  }): void => {
+    ipcRenderer.send('float:pushSerialState', s)
+  },
+
+  /** 主窗口 → 浮窗：实时数据快照（电压/电流/SOC/温度/单体/告警） */
+  pushLive: (s: {
+    totalV: number | null
+    currentA: number | null
+    soc: number | null
+    maxTempC: number | null
+    cellMaxV: number | null
+    cellMinV: number | null
+    cellDeltaMv: number | null
+    cellCount: number
+    protects: string[]
+    alarms: string[]
+  }): void => {
+    ipcRenderer.send('float:pushLive', s)
+  },
+
+  /** 浮窗：监听主窗口推送的串口状态与端口列表 */
+  onSerialState: (
+    callback: (s: {
+      connected: boolean
+      portLabel: string
+      comName: string
+      baudRate: number
+      ports: { path: string; comName: string }[]
+    }) => void
+  ) => {
+    ipcRenderer.on('float:serialState', (_event, s) => callback(s))
+  },
+
   /** 主窗口：蓝牙名称/BMS编码当前值变化时同步给浮窗输入框 */
   pushFieldValues: (v: { btName: string; bmsCode: string }): void => {
     ipcRenderer.send('float:pushValues', v)
@@ -294,6 +354,31 @@ contextBridge.exposeInMainWorld('floatAPI', {
   /** 主窗口：监听浮窗发来的读取全部请求 */
   onReadAll: (callback: () => void) => {
     ipcRenderer.on('float:readAll', () => callback())
+  },
+
+  /** 主窗口：监听浮窗发来的串口连接动作（list | connect | disconnect） */
+  onSerialAction: (
+    callback: (action: { action: 'list' | 'connect' | 'disconnect'; path?: string; baudRate?: number }) => void
+  ) => {
+    ipcRenderer.on('float:serialAction', (_event, action) => callback(action))
+  },
+
+  /** 浮窗：监听主窗口推送的实时数据快照（解析在主窗口完成，浮窗只显示） */
+  onLive: (
+    callback: (s: {
+      totalV: number | null
+      currentA: number | null
+      soc: number | null
+      maxTempC: number | null
+      cellMaxV: number | null
+      cellMinV: number | null
+      cellDeltaMv: number | null
+      cellCount: number
+      protects: string[]
+      alarms: string[]
+    }) => void
+  ) => {
+    ipcRenderer.on('float:live', (_event, s) => callback(s))
   }
 })
 
