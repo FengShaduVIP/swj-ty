@@ -21,13 +21,7 @@
       </div>
 
       <div class="sb-center">
-        <div v-for="r in readouts" :key="r.k" class="sb-readout">
-          <span class="sb-rk">{{ r.k }}</span>
-          <span class="sb-rv num" :style="{ color: r.color }">{{ r.v }}</span>
-        </div>
-
         <!-- 顶部快速串口连接 -->
-        <div class="sb-divider" />
         <div class="sb-port">
           <el-select
             v-model="topPort"
@@ -176,6 +170,13 @@
             :logs="dataLogs"
             :auth-session="authSession"
           />
+          <FactoryPanel
+            v-show="active === 'factory'"
+            :connected="connected"
+            :active="active === 'factory'"
+            :logs="dataLogs"
+            :auth-session="authSession"
+          />
           <DispatchLog v-show="active === 'log'" />
         </section>
       </main>
@@ -316,10 +317,11 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, markRaw } from 
 import { ElMessage } from 'element-plus'
 // 全局中文语言包：el-date-picker 等组件的弹层以中文呈现（英文 locale 会显示月份英文缩写）
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { Connection, DataBoard, Setting, Fold, Expand, Operation, Refresh, Tickets } from '@element-plus/icons-vue'
+import { Connection, DataBoard, Setting, Fold, Expand, Operation, Refresh, Tickets, Lightning } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
 import JbdPanel from './components/JbdPanel.vue'
 import JbdParamConfig from './components/JbdParamConfig.vue'
+import FactoryPanel from './components/FactoryPanel.vue'
 import DispatchLog from './components/DispatchLog.vue'
 import ConnIndicator from './components/ConnIndicator.vue'
 import StatusBadge from './components/StatusBadge.vue'
@@ -374,6 +376,7 @@ const JBD_VIEWS = markRaw<ViewDef[]>([
   { key: 'connect', title: '设备连接', hint: '配置串口参数并建立与 BMS 的通信链路', icon: Connection },
   { key: 'monitor', title: '实时监测', hint: '只读遥测：基本信息、趋势曲线、单体电压分布与内阻', icon: DataBoard },
   { key: 'config',  title: '参数配置', hint: '读写 0xFA 保护参数寄存器（支持导入/导出）', icon: Operation },
+  { key: 'factory', title: '产线下发', hint: '产线一键作业：实时遥测、强制下发参数、下发名称/编码与复位 MCU', icon: Lightning },
   { key: 'log',     title: '下发记录', hint: '强制下发的本地历史记录（时间 / 蓝牙名称 / 具体参数），可查询与导出', icon: Tickets },
 ])
 const views = JBD_VIEWS
@@ -672,18 +675,6 @@ function handleStatusChange(status: SerialStatus) {
   }
 }
 
-// ===== 顶部状态栏关键读数（来自 store.ui.live）=====
-const readouts = computed(() => {
-  const l = ui.live
-  const fmt = (v: number | null, d = 2, u = '') => (v === null ? '--' : v.toFixed(d) + (u ? ' ' + u : ''))
-  return [
-    { k: '总压', v: fmt(l.totalVoltage_V, 2, 'V'), color: 'var(--data-voltage)' },
-    { k: '电流', v: fmt(l.current_A, 2, 'A'), color: l.current_A != null && l.current_A < 0 ? 'var(--data-temp)' : 'var(--data-current)' },
-    { k: 'SOC', v: fmt(l.soc, 1, '%'), color: 'var(--data-soc)' },
-    { k: '最高温', v: fmt(l.maxTemp_C, 1, '℃'), color: 'var(--data-temp)' },
-  ]
-})
-
 const statusHint = computed(() => {
   if (!connected.value) return '未连接设备 · 请前往「设备连接」建立串口通信'
   if (ui.conn === 'error') return '通信异常 · 检测不到设备响应'
@@ -763,9 +754,10 @@ onUnmounted(() => {
   background: var(--bg-base);
   border-bottom: 1px solid var(--border-strong);
   min-height: 0;
+  overflow: hidden;
   z-index: var(--z-statusbar);
 }
-.sb-left { display: flex; align-items: center; gap: var(--space-5); }
+.sb-left { display: flex; align-items: center; gap: var(--space-5); flex-shrink: 0; }
 .brand { display: flex; align-items: center; gap: var(--space-3); }
 .brand-mark { width: 22px; height: 22px; fill: none; stroke: var(--brand); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
@@ -773,7 +765,7 @@ onUnmounted(() => {
 .brand-sub { font-size: 10px; color: var(--text-tertiary); letter-spacing: 0.02em; }
 .sb-divider { width: 1px; height: 22px; background: var(--border-strong); }
 
-.sb-center { display: flex; align-items: center; gap: var(--space-8); margin-left: var(--space-6); }
+.sb-center { display: flex; align-items: center; gap: var(--space-8); margin-left: var(--space-6); min-width: 0; }
 .sb-readout { display: flex; align-items: baseline; gap: var(--space-3); }
 .sb-rk { font-size: var(--fs-label); font-weight: var(--fw-semibold); letter-spacing: 0.06em; color: var(--text-secondary); text-transform: uppercase; }
 .sb-rv { font-size: var(--fs-num-md); font-weight: var(--fw-semibold); font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; }
@@ -891,9 +883,9 @@ onUnmounted(() => {
   background: transparent; border: 1px solid var(--border-default); color: var(--text-secondary); cursor: pointer;
 }
 .tb-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
-.tb-title { font-size: var(--fs-view-title); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.tb-title { font-size: var(--fs-view-title); font-weight: var(--fw-semibold); color: var(--text-primary); white-space: nowrap; }
 .tb-spacer { flex: 1; }
-.tb-hint { font-size: var(--fs-caption); color: var(--text-tertiary); }
+.tb-hint { font-size: var(--fs-caption); color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* 迷你告警条 */
 .alertbar {
