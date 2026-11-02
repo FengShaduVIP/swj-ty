@@ -681,6 +681,7 @@ const readouts = computed(() => {
     { k: '电流', v: fmt(l.current_A, 2, 'A'), color: l.current_A != null && l.current_A < 0 ? 'var(--data-temp)' : 'var(--data-current)' },
     { k: 'SOC', v: fmt(l.soc, 1, '%'), color: 'var(--data-soc)' },
     { k: '最高温', v: fmt(l.maxTemp_C, 1, '℃'), color: 'var(--data-temp)' },
+    { k: '串数', v: fmt(l.cellCount, 0), color: 'var(--data-aux-1)' },
   ]
 })
 
