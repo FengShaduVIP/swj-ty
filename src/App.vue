@@ -783,16 +783,16 @@ onUnmounted(() => {
 .sb-readout { display: flex; align-items: baseline; gap: var(--space-3); }
 .sb-rk { font-size: var(--fs-label); font-weight: var(--fw-semibold); letter-spacing: 0.06em; color: var(--text-secondary); text-transform: uppercase; }
 .sb-rv { font-size: var(--fs-num-md); font-weight: var(--fw-semibold); font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; }
-/* 电池串数高亮徽标:琥珀底色描边 + 加大字号,与普通读数拉开层次 */
+/* 电池串数高亮徽标:红色底色描边 + 加大字号,与普通读数拉开层次 */
 .sb-cells {
   display: flex; align-items: baseline; gap: var(--space-3);
   padding: 4px 14px; border-radius: var(--radius-pill);
-  background: rgba(252, 211, 77, 0.12);
-  border: 1px solid rgba(252, 211, 77, 0.45);
-  box-shadow: 0 0 14px rgba(252, 211, 77, 0.18);
+  background: rgba(245, 84, 78, 0.14);
+  border: 1px solid rgba(245, 84, 78, 0.5);
+  box-shadow: 0 0 14px rgba(245, 84, 78, 0.2);
 }
-.sb-cells-k { font-size: var(--fs-label); font-weight: var(--fw-bold); letter-spacing: 0.08em; color: var(--data-aux-1); }
-.sb-cells-v { font-size: var(--fs-num-lg); font-weight: var(--fw-bold); font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; color: var(--data-aux-1); line-height: 1.1; }
+.sb-cells-k { font-size: var(--fs-label); font-weight: var(--fw-bold); letter-spacing: 0.08em; color: var(--critical); }
+.sb-cells-v { font-size: var(--fs-num-lg); font-weight: var(--fw-bold); font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; color: var(--critical); line-height: 1.1; }
 
 .sb-port { display: flex; align-items: center; gap: var(--space-3); }
 .sb-port .el-select { --el-component-size-small: 24px; }
