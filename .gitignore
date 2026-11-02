@@ -17,3 +17,4 @@ release/
 /.zcode/
 /test-reports/
 /src/components.d.ts
+/pnpm-lock.yaml
