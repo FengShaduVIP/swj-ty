@@ -26,6 +26,12 @@
           <span class="sb-rv num" :style="{ color: r.color }">{{ r.v }}</span>
         </div>
 
+        <!-- 电池串数:高亮徽标,区别于普通读数 -->
+        <div class="sb-cells">
+          <span class="sb-cells-k">串数</span>
+          <span class="sb-cells-v num">{{ ui.live.cellCount ?? '--' }}</span>
+        </div>
+
         <!-- 顶部快速串口连接 -->
         <div class="sb-divider" />
         <div class="sb-port">
@@ -681,7 +687,6 @@ const readouts = computed(() => {
     { k: '电流', v: fmt(l.current_A, 2, 'A'), color: l.current_A != null && l.current_A < 0 ? 'var(--data-temp)' : 'var(--data-current)' },
     { k: 'SOC', v: fmt(l.soc, 1, '%'), color: 'var(--data-soc)' },
     { k: '最高温', v: fmt(l.maxTemp_C, 1, '℃'), color: 'var(--data-temp)' },
-    { k: '串数', v: fmt(l.cellCount, 0), color: 'var(--data-aux-1)' },
   ]
 })
 
@@ -778,6 +783,16 @@ onUnmounted(() => {
 .sb-readout { display: flex; align-items: baseline; gap: var(--space-3); }
 .sb-rk { font-size: var(--fs-label); font-weight: var(--fw-semibold); letter-spacing: 0.06em; color: var(--text-secondary); text-transform: uppercase; }
 .sb-rv { font-size: var(--fs-num-md); font-weight: var(--fw-semibold); font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; }
+/* 电池串数高亮徽标:琥珀底色描边 + 加大字号,与普通读数拉开层次 */
+.sb-cells {
+  display: flex; align-items: baseline; gap: var(--space-3);
+  padding: 4px 14px; border-radius: var(--radius-pill);
+  background: rgba(252, 211, 77, 0.12);
+  border: 1px solid rgba(252, 211, 77, 0.45);
+  box-shadow: 0 0 14px rgba(252, 211, 77, 0.18);
+}
+.sb-cells-k { font-size: var(--fs-label); font-weight: var(--fw-bold); letter-spacing: 0.08em; color: var(--data-aux-1); }
+.sb-cells-v { font-size: var(--fs-num-lg); font-weight: var(--fw-bold); font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; color: var(--data-aux-1); line-height: 1.1; }
 
 .sb-port { display: flex; align-items: center; gap: var(--space-3); }
 .sb-port .el-select { --el-component-size-small: 24px; }
