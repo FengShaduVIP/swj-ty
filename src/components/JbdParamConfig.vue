@@ -15,8 +15,8 @@
             <span class="src-name">{{ importedSourceName }}</span>
             <el-icon class="src-clear" @click="importedSourceName = ''"><Close /></el-icon>
           </span>
-          <el-button size="small" @click="saveAsTemplate"><el-icon><Files /></el-icon> 存为模板</el-button>
-          <el-button size="small" @click="exportConfig"><el-icon><Download /></el-icon> 导出配置</el-button>
+          <el-button size="small" @click="confirmThenSaveTemplate"><el-icon><Files /></el-icon> 存为模板</el-button>
+          <el-button size="small" @click="confirmThenExportConfig"><el-icon><Download /></el-icon> 导出配置</el-button>
           <el-button size="small" :type="dragMode ? 'warning' : 'default'" @click="dragMode = !dragMode">
             <el-icon><Operation /></el-icon> {{ dragMode ? '完成排序' : '拖动排序' }}
           </el-button>
@@ -106,27 +106,27 @@
       </div>
     </el-dialog>
 
-    <!-- 下发密码校验弹窗（仅检流阻值等 needPassword 字段） -->
+    <!-- 密码校验弹窗（检流阻值等 needPassword 字段下发、存为模板/导出配置共用） -->
     <el-dialog
       v-model="pwdDialogVisible"
-      title="下发确认"
+      :title="pwdTitle"
       width="360px"
       :close-on-click-modal="false"
       :show-close="false"
       @closed="onPwdCancel"
     >
-      <div class="tip" style="margin-bottom: 12px">该参数下发需要输入密码确认。</div>
+      <div class="tip" style="margin-bottom: 12px">{{ pwdHint }}</div>
       <el-input
         v-model="pwdInput"
         type="password"
         show-password
-        placeholder="请输入下发密码"
+        placeholder="请输入密码"
         @keyup.enter="onPwdConfirm"
       />
       <div v-if="pwdError" class="pwd-error">{{ pwdError }}</div>
       <template #footer>
         <el-button size="small" @click="onPwdCancel">取消</el-button>
-        <el-button size="small" type="primary" @click="onPwdConfirm">确认下发</el-button>
+        <el-button size="small" type="primary" @click="onPwdConfirm">{{ pwdConfirmText }}</el-button>
       </template>
     </el-dialog>
 
@@ -635,16 +635,23 @@ const shuntMOhm = computed(() => {
   return typeof v === 'number' && v > 0 ? v : 0
 })
 
-// ====== 下发密码校验（仅检流阻值等 needPassword 字段） ======
+// ====== 密码校验（检流阻值等 needPassword 字段下发、存为模板/导出配置共用） ======
 // 密码常量存放于主进程（electron/main.ts），渲染层 bundle 不落明文；
 // 这里只提交候选值由主进程比对，属于业务确认口令而非安全边界。
 const pwdDialogVisible = ref(false)
 const pwdInput = ref('')
 const pwdError = ref('')
+// 弹窗文案随调用场景变化，缺省为字段下发场景
+const pwdTitle = ref('下发确认')
+const pwdHint = ref('该参数下发需要输入密码确认。')
+const pwdConfirmText = ref('确认下发')
 // Promise resolve 无需响应式：普通变量即可（还避免出现在 devtools 组件状态里）
 let pwdResolve: ((ok: boolean) => void) | null = null
 
-function confirmPassword(): Promise<boolean> {
+function confirmPassword(opts?: { title?: string; hint?: string; confirmText?: string }): Promise<boolean> {
+  pwdTitle.value = opts?.title ?? '下发确认'
+  pwdHint.value = opts?.hint ?? '该参数下发需要输入密码确认。'
+  pwdConfirmText.value = opts?.confirmText ?? '确认下发'
   pwdInput.value = ''
   pwdError.value = ''
   pwdDialogVisible.value = true
@@ -664,6 +671,18 @@ function onPwdCancel() {
   pwdDialogVisible.value = false
   pwdResolve?.(false)
   pwdResolve = null
+}
+
+// 存为模板 / 导出配置：密码确认后才能操作（密码与检流阻值下发一致）
+async function confirmThenSaveTemplate() {
+  const ok = await confirmPassword({ title: '保存模板确认', hint: '保存为模板需要输入密码确认。', confirmText: '确认保存' })
+  if (!ok) return
+  await saveAsTemplate()
+}
+async function confirmThenExportConfig() {
+  const ok = await confirmPassword({ title: '导出配置确认', hint: '导出配置需要输入密码确认。', confirmText: '确认导出' })
+  if (!ok) return
+  exportConfig()
 }
 
 /** ASCII 字段输入：直接存字符串并标脏 */
