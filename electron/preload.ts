@@ -61,6 +61,16 @@ export interface UpdaterAPI {
   removeStatusListeners: () => void
 }
 
+// 暴露无边框窗口控制能力（最小化/最大化还原/关闭 + 最大化状态广播）
+contextBridge.exposeInMainWorld('winAPI', {
+  minimize: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('win:minimize'),
+  toggleMaximize: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('win:toggleMaximize'),
+  close: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('win:close'),
+  onMaximizedChange: (callback: (maximized: boolean) => void) => {
+    ipcRenderer.on('win:maximized', (_event, maximized: boolean) => callback(maximized))
+  }
+})
+
 // 暴露后台登录能力（请求在主进程执行，accessToken 不进入渲染进程）
 contextBridge.exposeInMainWorld('authAPI', {
   login: (credentials: { username: string; password: string }): Promise<BackendLoginResult> =>
@@ -175,6 +185,39 @@ contextBridge.exposeInMainWorld('shellAPI', {
   /** 用系统默认浏览器打开外部链接，url 须为 http/https */
   openExternal: (url: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('app:openExternal', url)
+})
+
+// 暴露通讯日志独立窗口能力（主窗口推送 / 日志窗口接收，主进程中转）
+contextBridge.exposeInMainWorld('logWinAPI', {
+  /** 主窗口：打开/聚焦日志窗口（默认停靠主窗口右侧外侧） */
+  open: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('log:open'),
+  /** 主窗口 → 日志窗口：批量追加条目 */
+  push: (lines: { id: number; time: string; type: string; content: string }[]) =>
+    ipcRenderer.send('log:push', lines),
+  /** 日志窗口：历史日志回填就绪（打开后由主进程广播一次） */
+  onReady: (callback: () => void) => {
+    ipcRenderer.on('log:ready', () => callback())
+  },
+  /** 日志窗口：接收追加条目 */
+  onAppend: (callback: (lines: { id: number; time: string; type: string; content: string }[]) => void) => {
+    ipcRenderer.on('log:append', (_event, lines) => callback(lines))
+  },
+  /** 日志窗口：接收清空指令 */
+  onClear: (callback: () => void) => {
+    ipcRenderer.on('log:clear', () => callback())
+  },
+  /** 日志窗口：发起清空请求（经主进程中转到主窗口） */
+  requestClear: () => ipcRenderer.send('log:clear-request'),
+  /** 日志窗口：接收容量常量（单一来源 src/constants） */
+  onCfg: (callback: (cfg: { maxLines: number }) => void) => {
+    ipcRenderer.on('log:cfg', (_event, cfg) => callback(cfg))
+  },
+  /** 主窗口：推送主题到日志窗口（dark = true 深色） */
+  setTheme: (dark: boolean) => ipcRenderer.send('log:theme', dark),
+  /** 日志窗口：接收主题切换 */
+  onTheme: (callback: (dark: boolean) => void) => {
+    ipcRenderer.on('log:theme', (_event, dark) => callback(dark))
+  }
 })
 
 // === 类型定义 ===

@@ -1,206 +1,149 @@
-/** 分组字段定义（静态数据，与 IO 逻辑解耦）：1 排 2 列瀑布流布局，每组内字段 3 列网格，共 11 组 */
+/** 分组字段定义（静态数据，与 IO 逻辑解耦）
+ *  布局对齐嘉佰达 JBDTools 参数设置页（2026-11-19 真机界面核验）：
+ *  三列固定分配（46/27/27）：col1 = 基本参数/高级保护/均衡；col2 = 其他信息/NTC/功能；col3 = 容量(内部两列)。
+ *  每组 layout = triple（保护/释放/延时 三段行）| rows（单字段行）| bits（位开关栅格）。
+ */
 import type { FieldDef, FieldState, GroupObj } from './types'
 
 function makeField(def: FieldDef): FieldState {
   return { ...def, value: def.bitIndex !== undefined ? false : null, dirty: false, status: 'idle' }
 }
 
-const GROUP_DEFS: { title: string; order: number; cols?: number; action?: { label: string; bitIndex: number }; fields: FieldDef[] }[] = [
-  // 1. 基本设置（12 项 / 3 列 × 4 行）
-  {
-    title: '基本设置',
-    order: 1,
-    fields: [
-      { label: '蓝牙名称', key: 'bt-name', index: 88, ascii: true, ascii_len: 16, fullWidth: true, resetMcu: true },
-      { label: '芯片类型', key: 'chip-type', customDisplay: 'chipType' },
-      { label: '电池SN码', key: 'sn', index: 6, customDisplay: 'serialRaw', readOnly: true },
-      { label: '电池型号', key: 'battery-model', index: 158, ascii: true, ascii_len: 12, readOnly: true },
-      { label: '生产厂商信息', key: 'mfr', index: 56, ascii: true, ascii_len: 16 },
-      { label: 'BMS编码信息', key: 'bms-ver', index: 72, ascii: true, ascii_len: 16 },
-      { label: 'BMS型号', key: 'bms-hw-name', index: 176, ascii: true, ascii_len: 8, readOnly: true },
-      { label: '生产日期', key: 'prod-date', index: 5, customDisplay: 'date' },
-      { label: '额定充电电压', index: 117, unit: 'V', decimals: 1, step: 0.1 },
-      { label: '额定充电电流', index: 119, unit: 'A', decimals: 0 },
-      { label: '额定放电电流', index: 118, unit: 'A', decimals: 0 },
-      { label: '额定放电功率', index: 120, unit: 'W', decimals: 0 },
-    ],
-  },
-  // 2. 电流设置（10 项 / 3 列 × 4 行）
-  {
-    title: '电流设置',
-    order: 2,
-    fields: [
-      { label: '充电过流保护', index: 24, unit: 'mA', decimals: 0, step: 10 },
-      { label: '充电过流延时', index: 52, unit: 'S', decimals: 0 },
-      { label: '充电过流恢复延时', index: 53, unit: 'S', decimals: 0 },
-      { label: '放电过流保护', index: 25, unit: 'mA', decimals: 0, step: 10 },
-      { label: '放电过流延时', index: 54, unit: 'S', decimals: 0 },
-      { label: '放电过流恢复延时', index: 55, unit: 'S', decimals: 0 },
-      { label: '二级过流保护', index: 40, kind: 'scd', scdPart: 'level'},
-      { label: '二级过流延时', index: 40, kind: 'scd', scdPart: 'delay'},
-      { label: '短路保护', index: 41, kind: 'scd', scdPart: 'level' },
-      { label: '短路保护延时', index: 41, kind: 'scd', scdPart: 'delay'},
-      { label: '短路释放延时', index: 43, unit: 'S', decimals: 0 },
-    ],
-  },
+interface GroupDef {
+  title: string
+  col: 1 | 2 | 3
+  layout: 'rows' | 'triple' | 'bits'
+  twoCol?: boolean
+  pair?: boolean
+  regRange?: string
+  action?: { label: string; bitIndex: number }
+  fields: FieldDef[]
+}
 
-  // 3. 容量电压（12 项 / 3 列 × 4 行）
+const GROUP_DEFS: GroupDef[] = [
+  // ===== 1：基本参数（保护 / 释放 / 延时，JBDTools 最左大列）=====
   {
-    title: '容量电压',
-    order: 3,
+    title: '基本参数', col: 1, layout: 'triple', regRange: 'reg 8~55',
     fields: [
-      { label: '10%', index: 110, unit: 'mV', decimals: 0 },
-      { label: '20%', index: 37, unit: 'mV', decimals: 0 },
-      { label: '30%', index: 109, unit: 'mV', decimals: 0 },
-      { label: '40%', index: 36, unit: 'mV', decimals: 0 },
-      { label: '50%', index: 108, unit: 'mV', decimals: 0 },
-      { label: '60%', index: 35, unit: 'mV', decimals: 0 },
-      { label: '70%', index: 107, unit: 'mV', decimals: 0 },
-      { label: '80%', index: 34, unit: 'mV', decimals: 0 },
-      { label: '90%', index: 106, unit: 'mV', decimals: 0 },
-      { label: '100%', index: 111, unit: 'mV', decimals: 0 },
-      { label: '置满电压', index: 2, unit: 'mV', decimals: 0 },
-      { label: '置空电压', index: 3, unit: 'mV', decimals: 0 },
+      { label: '单体过压', index: 20, unit: 'mV' }, { label: '单体过压恢复', index: 21, unit: 'mV' }, { label: '单体过压延时', index: 51, unit: 's' },
+      { label: '单体欠压', index: 22, unit: 'mV' }, { label: '单体欠压恢复', index: 23, unit: 'mV' }, { label: '单体欠压延时', index: 50, unit: 's' },
+      { label: '整组过压', index: 16, unit: 'V', decimals: 2, step: 0.01 }, { label: '整组过压恢复', index: 17, unit: 'V', decimals: 2 }, { label: '整组过压延时', index: 49, unit: 's' },
+      { label: '整组欠压', index: 18, unit: 'V', decimals: 2, step: 0.01 }, { label: '整组欠压恢复', index: 19, unit: 'V', decimals: 2 }, { label: '整组欠压延时', index: 48, unit: 's' },
+      { label: '充电高温', index: 8, unit: '℃', decimals: 1 }, { label: '充电高温恢复', index: 9, unit: '℃', decimals: 1 }, { label: '充电高温延时', index: 45, unit: 's' },
+      { label: '充电低温', index: 10, unit: '℃', decimals: 1 }, { label: '充电低温恢复', index: 11, unit: '℃', decimals: 1 }, { label: '充电低温延时', index: 44, unit: 's' },
+      { label: '放电高温', index: 12, unit: '℃', decimals: 1 }, { label: '放电高温恢复', index: 13, unit: '℃', decimals: 1 }, { label: '放电高温延时', index: 47, unit: 's' },
+      { label: '放电低温', index: 14, unit: '℃', decimals: 1 }, { label: '放电低温恢复', index: 15, unit: '℃', decimals: 1 }, { label: '放电低温延时', index: 46, unit: 's' },
+      { label: '充电过流', index: 24, unit: 'mA', step: 10 }, { label: '充电过流恢复', index: 53, unit: 's' }, { label: '充电过流延时', index: 52, unit: 's' },
+      { label: '放电过流', index: 25, unit: 'mA', step: 10 }, { label: '放电过流恢复', index: 55, unit: 's' }, { label: '放电过流延时', index: 54, unit: 's' },
     ],
   },
-  // 5. 温度探头配置（序号 30 低字节：温度探头 1~8 使能，1 字节 8 bit / 3 列 × 3 行 + 应用配置按钮）
+  // ===== 容量配置（独占第三列，内部两列压缩 SOC 表）=====
   {
-    title: '温度探头配置',
-    order: 5,
-    action: { label: '应用配置', bitIndex: 30 },
+    title: '容量配置', col: 3, layout: 'rows', regRange: 'reg 0~4 · 32~33 · SOC 表',
     fields: [
-      { label: '温度探头_1',  key: 'probe-1',  bitIndex: 30, bit: 0  },
-      { label: '温度探头_2',  key: 'probe-2',  bitIndex: 30, bit: 1  },
-      { label: '温度探头_3',  key: 'probe-3',  bitIndex: 30, bit: 2  },
-      { label: '温度探头_4',  key: 'probe-4',  bitIndex: 30, bit: 3  },
-      { label: '温度探头_5',  key: 'probe-5',  bitIndex: 30, bit: 4  },
-      { label: '温度探头_6',  key: 'probe-6',  bitIndex: 30, bit: 5  },
-      { label: '温度探头_7',  key: 'probe-7',  bitIndex: 30, bit: 6  },
-      { label: '温度探头_8',  key: 'probe-8',  bitIndex: 30, bit: 7  },
-    ],
-  },
-  // 6. 均衡设置（4 项 / 3 列 × 2 行）
-  {
-    title: '均衡设置',
-    order: 6,
-    fields: [
-      { label: '均衡开启电压', index: 26, unit: 'mV', decimals: 0 },
-      { label: '均衡开启压差', index: 27, unit: 'mV', decimals: 0 },
-      { label: 'GPS关闭电压', index: 104, unit: 'mV', decimals: 0 },
-      { label: 'GPS关闭延时', index: 105, unit: 'S', decimals: 0 },
-    ],
-  },
-  // 4. 系统设置（6 项 / 3 列 × 2 行）
-  {
-    title: '系统设置',
-    order: 4,
-    fields: [
-      { label: '休眠时间', index: 122, unit: 'S', decimals: 0 },
-      { label: '容量修正间隔', index: 113, unit: 'S', decimals: 0 },
-      { label: '最小识别电流', index: 121, unit: 'mA', decimals: 0 },
-      { label: '循环次数', index: 7, unit: '次', decimals: 0 },
-    ],
-  },
-  // 8. 初始化设置（2 项 / 3 列 × 1 行）
-  {
-    title: '初始化设置',
-    order: 8,
-    fields: [
+      { label: '复位次数', key: 'reset-count', customDisplay: 'resetCount' },
       { label: '标称容量', index: 0, unit: 'Ah', decimals: 2, step: 0.01 },
       { label: '循环容量', index: 1, unit: 'Ah', decimals: 2, step: 0.01 },
-      { label: '满充容量', index: 112, unit: 'Ah', decimals: 2, step: 0.01, readOnly: true },
+      { label: '系统功耗', index: 4, unit: 'mA' },
+      { label: '平均置满电压', index: 2, unit: 'mV' },
+      { label: '平均置空电压', index: 3, unit: 'mV' },
+      { label: '100%', index: 111, unit: 'mV' },
+      { label: '90%', index: 106, unit: 'mV' },
+      { label: '80%', index: 34, unit: 'mV' },
+      { label: '70%', index: 107, unit: 'mV' },
+      { label: '60%', index: 35, unit: 'mV' },
+      { label: '50%', index: 108, unit: 'mV' },
+      { label: '40%', index: 36, unit: 'mV' },
+      { label: '30%', index: 109, unit: 'mV' },
+      { label: '20%', index: 37, unit: 'mV' },
+      { label: '10%', index: 110, unit: 'mV' },
+      { label: '关机时间', index: 32, unit: 's' },
+      { label: 'LED点亮时间', index: 33, unit: 's' },
     ],
   },
-  // 9. 温度设置（12 项 / 3 列 × 4 行）
+  // ===== 2：高级保护（基本参数下方，字段两两一行，scd 下拉成对显示）=====
   {
-    title: '温度设置',
-    order: 9,
+    title: '高级保护', col: 1, layout: 'rows', pair: true, regRange: 'reg 38~43',
     fields: [
-      { label: '充电高温保护', index: 8, unit: '℃', decimals: 1 },
-      { label: '充电高温恢复', index: 9, unit: '℃', decimals: 1 },
-      { label: '充电高温延时', index: 45, unit: 'S', decimals: 0 },
-      { label: '充电低温保护', index: 10, unit: '℃', decimals: 1 },
-      { label: '充电低温恢复', index: 11, unit: '℃', decimals: 1 },
-      { label: '充电低温延时', index: 44, unit: 'S', decimals: 0 },
-      { label: '放电高温保护', index: 12, unit: '℃', decimals: 1 },
-      { label: '放电高温恢复', index: 13, unit: '℃', decimals: 1 },
-      { label: '放电高温延时', index: 47, unit: 'S', decimals: 0 },
-      { label: '放电低温保护', index: 14, unit: '℃', decimals: 1 },
-      { label: '放电低温恢复', index: 15, unit: '℃', decimals: 1 },
-      { label: '放电低温延时', index: 46, unit: 'S', decimals: 0 },
+      { label: '硬件单体过压', index: 38, unit: 'mV' },
+      { label: '硬件单体欠压', index: 39, unit: 'mV' },
+      { label: '过压延时', index: 42, kind: 'hvd', hvdPart: 'ov', unit: 's' },
+      { label: '欠压延时', index: 42, kind: 'hvd', hvdPart: 'uv', unit: 's' },
+      { label: '二级放电过流', index: 40, unit: 'A', kind: 'scd', scdPart: 'level' },
+      { label: '过流2延时', index: 40, unit: 'ms', kind: 'scd', scdPart: 'delay' },
+      { label: '短路保护值', index: 41, unit: 'A', kind: 'scd', scdPart: 'level' },
+      { label: '短路延时', index: 41, unit: 'ms', kind: 'scd', scdPart: 'delay' },
+      { label: '短路释放延时', index: 43, unit: 's' },
+      { label: '过流及短路保护值翻倍', key: 'scd-double', bitIndex: 40, bit: 15 },
     ],
   },
-  // 10. 保护参数（14 项 / 3 列 × 5 行）
+  // ===== 3：其他信息配置（条形码=reg88 蓝牙名称块；序列号/电池串数可编辑；检流电阻🔒）=====
   {
-    title: '保护参数',
-    order: 10,
+    title: '其他信息配置', col: 2, layout: 'rows', regRange: '标识 / ASCII',
     fields: [
-      { label: '单体过压保护', index: 20, unit: 'mV', decimals: 0 },
-      { label: '单体过压恢复', index: 21, unit: 'mV', decimals: 0 },
-      { label: '单体过压延时', index: 51, unit: 'S', decimals: 0 },
-      { label: '单体欠压保护', index: 22, unit: 'mV', decimals: 0 },
-      { label: '单体欠压恢复', index: 23, unit: 'mV', decimals: 0 },
-      { label: '单体欠压延时', index: 50, unit: 'S', decimals: 0 },
-      { label: '总体过压保护', index: 16, unit: 'V', decimals: 2, step: 0.01 },
-      { label: '总体过压恢复', index: 17, unit: 'V', decimals: 2, step: 0.01 },
-      { label: '总体过压延时', index: 49, unit: 'S', decimals: 0 },
-      { label: '总体欠压保护', index: 18, unit: 'V', decimals: 2, step: 0.01 },
-      { label: '总体欠压恢复', index: 19, unit: 'V', decimals: 2, step: 0.01 },
-      { label: '总体欠压延时', index: 48, unit: 'S', decimals: 0 },
-      { label: '硬件过压保护', index: 38, unit: 'mV', decimals: 0 },
-      { label: '硬件欠压保护', index: 39, unit: 'mV', decimals: 0 },
+      { label: '制造商', key: 'mfr', index: 56, ascii: true, ascii_len: 16 },
+      { label: 'BMS编码', key: 'bms-ver', index: 72, ascii: true, ascii_len: 16 },
+      { label: '条形码', key: 'bt-name', index: 88, ascii: true, ascii_len: 16 },
+      { label: '序列号', index: 6 },
+      { label: '循环次数', index: 7, unit: '次' },
+      { label: '生产日期', key: 'prod-date', index: 5, customDisplay: 'date' },
+      { label: '电池串数', index: 31, unit: '串' },
+      { label: '检流阻值', index: 28, unit: 'mΩ', decimals: 2, step: 0.01, needPassword: true, note: '独立配置' },
     ],
   },
-
-  // 11. 功能设置（11 项 / 3 列 × 4 行，末行 + 应用设置按钮）
+  // ===== 4：NTC 配置（其他信息下方）=====
   {
-    title: '功能设置',
-    order: 11,
+    title: 'NTC配置', col: 2, layout: 'bits', regRange: 'reg 30',
+    action: { label: '应用配置', bitIndex: 30 },
+    fields: Array.from({ length: 8 }, (_, i) => ({
+      label: `NTC${i + 1}`, key: `ntc-${i + 1}`, bitIndex: 30, bit: i,
+    })) as FieldDef[],
+  },
+  // ===== 6：均衡配置（高级保护下方，字段两两一行）=====
+  {
+    title: '均衡配置', col: 1, layout: 'rows', pair: true, regRange: 'reg 26~27 · 104~105',
+    fields: [
+      { label: '开启电压', index: 26, unit: 'mV' },
+      { label: '均衡精度', index: 27, unit: 'mV' },
+      { label: 'GPS关闭电压', index: 104, unit: 'mV' },
+      { label: 'GPS关闭延时', index: 105, unit: 's' },
+    ],
+  },
+  // ===== 5：功能配置（reg29；位名依协议表，JBDTools 本版位定义有差异待厂商位表）=====
+  {
+    title: '功能配置', col: 2, layout: 'bits', regRange: 'reg 29',
     action: { label: '应用设置', bitIndex: 29 },
     fields: [
       { label: '开关功能', key: 'cfg-sw', bitIndex: 29, bit: 0 },
       { label: '负载检测', key: 'cfg-load', bitIndex: 29, bit: 1 },
       { label: '均衡功能', key: 'cfg-bal', bitIndex: 29, bit: 2 },
-      { label: '均衡方式', key: 'cfg-bal-mode', bitIndex: 29, bit: 3, customDisplay: 'balanceMode' },
-      { label: 'LED', key: 'cfg-led', bitIndex: 29, bit: 4 },
-      { label: 'LED数量', key: 'led-count', readOnly: true, note: '需协议补充' },
+      { label: '充电均衡', key: 'cfg-bal-mode', bitIndex: 29, bit: 3 },
+      { label: 'LED功能', key: 'cfg-led', bitIndex: 29, bit: 4 },
       { label: 'RTC', key: 'cfg-rtc', bitIndex: 29, bit: 5 },
       { label: 'FCC限制', key: 'cfg-fcc', bitIndex: 29, bit: 6 },
       { label: '充电握手', key: 'cfg-handshake', bitIndex: 29, bit: 7 },
-      { label: 'GPS', key: 'cfg-gps', bitIndex: 29, bit: 8 },
-      { label: '蜂鸣器续延', key: 'cfg-buzzer', bitIndex: 29, bit: 9 },
-    ],
-  },
-  // 7. 检流电阻（独立模块：index 28；导入模板时不随下发）
-  {
-    title: '检流电阻',
-    order: 7,
-    cols: 1,
-    fields: [
-      { label: '检流阻值', index: 28, unit: 'mΩ', decimals: 2, step: 0.01, note: '独立配置', needPassword: true },
+      { label: 'GPS模式', key: 'cfg-gps', bitIndex: 29, bit: 8 },
+      { label: '蜂鸣器功能', key: 'cfg-buzzer', bitIndex: 29, bit: 9 },
+      { label: 'LED数量', key: 'led-count', readOnly: true, note: '需协议补充' },
     ],
   },
 ]
 
-export const builtGroups: GroupObj[] = GROUP_DEFS.map((g) => ({ title: g.title, cols: g.cols, action: g.action, fields: g.fields.map(makeField) }))
+export const builtGroups: GroupObj[] = GROUP_DEFS.map((g) => ({
+  title: g.title, col: g.col, layout: g.layout, twoCol: g.twoCol, pair: g.pair, regRange: g.regRange, action: g.action,
+  fields: g.fields.map(makeField),
+}))
 
-// 出厂默认左右两列布局（用户拖拽确认后的顺序，已固化进代码）。
-// 如需调整默认排布，直接改这里的标题顺序即可；GROUP_DEFS 中未列出的分组会自动补到右列末尾。
-export const defaultColumnOrder: [string[], string[]] = [
-  ['基本设置', '电流设置', '保护参数', '温度探头配置', '检流电阻'],
-  ['初始化设置', '容量电压', '温度设置', '功能设置', '系统设置', '均衡设置'],
-]
-
-export function buildColumnsFromTitles(order: string[][]): GroupObj[][] {
-  const pool = new Map(builtGroups.map((g) => [g.title, g]))
-  const cols: GroupObj[][] = order.map((col) => {
-    const arr: GroupObj[] = []
-    for (const t of col) {
-      const g = pool.get(t)
-      if (g) { arr.push(g); pool.delete(t) }
-    }
-    return arr
-  })
-  for (const g of pool.values()) cols[cols.length - 1].push(g)
+/** JBDTools 固定三列布局（46/27/27） */
+export function buildStaticColumns(): GroupObj[][] {
+  const cols: GroupObj[][] = [[], [], []]
+  for (const g of builtGroups) cols[(g.col ?? 1) - 1].push(g)
   return cols
+}
+
+/** 基本参数 triple 行分组（10 行 × 保护/恢复/延时） */
+export function tripleRows(fields: FieldState[]): FieldState[][] {
+  const rows: FieldState[][] = []
+  for (let i = 0; i + 2 < fields.length; i += 3) rows.push([fields[i], fields[i + 1], fields[i + 2]])
+  return rows
 }

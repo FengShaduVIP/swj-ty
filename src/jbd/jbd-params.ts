@@ -322,11 +322,11 @@ function trimNum(n: number, max = 3): string {
 export type ScdParam = 'ocd' | 'scd'
 
 /**
- * 保护值下拉 label：档 N · 电流(A)。
+ * 保护值下拉 label：电流(A)（2026-11-19 按需求隐藏档号，仅显示物理量；各芯片查表值互异无重项）。
  *   - 凹凸(1)：查表值直接为电流(A)，无需折算，直接显示 A。
  *   - 其他芯片：查表值为电压阈值(mV)，÷检流电阻(mΩ) 得电流(A)；检流电阻未知时按 DEFAULT_SHUNT_MOHM 估算。
  *   - 全部芯片统一显示单位 A（无 mV 回退）。
- * TI(0) 方案位域不同且无 mV 表，label 仅显示档位并标注「TI专用」。
+ * TI(0) 方案位域不同且无 mV 表，无物理量可显示，保留档号区分选项。
  */
 /** 检流电阻未知时的默认估算值(mΩ)，用于把 mV 阈值折算为电流(A)显示。
  *  典型小容量 BMS 采样电阻为 0.1 mΩ（与用户提供的凹凸上位机截图吻合：
@@ -334,23 +334,18 @@ export type ScdParam = 'ocd' | 'scd'
 export const DEFAULT_SHUNT_MOHM = 0.1
 
 export function scdProtectLabel(param: ScdParam, chip: number | null, level: number, shuntMOhm: number): string {
-  if (chip === 0) return `档${level} · TI专用`
-  // 凹凸芯片：保护值直接是安培(A)
-  // if (chip === 1) {
-  //   const amps = param === 'ocd' ? overcurrentMv(chip, level) : shortCircuitMv(chip, level)
-  //   return `档${level} · ${trimNum(amps, 1)} A`
-  // }
+  if (chip === 0) return `档${level}（TI专用）`
   // 其他芯片：mV → A（÷检流电阻；检流电阻未知时按默认值估算）
   const mv = param === 'ocd' ? overcurrentMv(chip, level) : shortCircuitMv(chip, level)
   const shunt = shuntMOhm > 0 ? shuntMOhm : DEFAULT_SHUNT_MOHM
-  return `档${level} · ${trimNum(mv / shunt, 2)} A`
+  return trimNum(mv / shunt, 2)
 }
 
-/** 延时下拉 label：统一以 mS 展示（短路延时由 µS ÷1000 换算） */
+/** 延时下拉 label：统一以 ms 展示（短路延时由 µS ÷1000 换算）；TI 保留档号区分 */
 export function scdDelayLabelMs(param: ScdParam, chip: number | null, delay: number): string {
-  if (chip === 0) return `档${delay} · TI专用`
+  if (chip === 0) return `档${delay}（TI专用）`
   const ms = param === 'ocd' ? overcurrentDelayMs(chip, delay) : shortCircuitDelayUs(chip, delay) / 1000
-  return `档${delay} · ${trimNum(ms, 3)} ms`
+  return trimNum(ms, 3)
 }
 
 /** 显示值应保留的小数位数（与 paramFormat 一致）：temp→1、shunt→2、scale<1→-log10(scale)（上限 4）、否则 0。

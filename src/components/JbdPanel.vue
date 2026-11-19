@@ -1,196 +1,140 @@
 <!--
-  JbdPanel — 实时监测（只读）
-  布局严格对齐参考图：
-    左列：电池概览（图标 + 7 项读数 + 保护/均衡状态）+ 保护事件表
-    右列：单体电压栅格（4×6，24 cell）+ 温度（圆环 + 温度条）
+  JbdPanel — 实时监测（只读）（基准：design/preview.html 页面 1）
+  左列：电池概览（SOC 条 + 6 项读数 + 开关/均衡/保护状态）+ 设备信息 + 保护事件次数
+  右列：单体电压栅格（最高/最低/均衡中标记）+ 温度（MOS 圆盘 + 温度条）
+  数据全部来自 useJbd 单例（0x03/0x04/0x00 每 2s 轮询 + 保护事件每 5s）。
+  页面激活（点开）即全量拉取一次并持续自动更新，无手动按钮。
 -->
 <template>
   <div class="jbd-panel monitor">
-    <!-- ===== 顶部工具栏 ===== -->
-    <div class="vp-toolbar">
-      <el-checkbox v-model="autoPollProxy" @change="onPollChange">自动轮询 (2s)</el-checkbox>
-      <el-checkbox v-model="readProtectOnPoll" @change="scheduleProtectRead" />
-      <span class="vp-meta">同步保护事件</span>
-      <span class="vp-spacer" />
-      <span class="vp-meta num" v-if="lastPoll">{{ lastPoll }} 已拉取</span>
-      <el-button @click="refreshAll" :icon="Refresh">读取全部</el-button>
-    </div>
-
     <!-- ===== 双列主内容 ===== -->
-    <div class="monitor-grid">
+    <div class="mon-grid">
       <!-- ============== 左列 ============== -->
-      <div class="col">
-        <!-- 电池概览卡 -->
-        <section class="sec battery-sec">
-          <div class="battery-row">
-            <BatteryMeter :soc="rsoc" :status="socStatus" />
-            <div class="battery-info">
-              <div class="info-grid">
-                <div class="kv">
-                  <span class="kv-label">总电压</span>
-                  <span class="kv-num">
-                    <span class="num">{{ fmt(totalV, 2) }}</span>
-                    <span class="kv-unit">V</span>
-                  </span>
-                </div>
-                <div class="kv">
-                  <span class="kv-label">循环次数</span>
-                  <span class="kv-num">
-                    <span class="num">{{ cycleCount }}</span>
-                    <span class="kv-unit">次</span>
-                  </span>
-                </div>
-                <div class="kv">
-                  <span class="kv-label">电流</span>
-                  <span class="kv-num" :class="{ 'kv--neg': currentA < 0 }">
-                    <span class="num">{{ fmt(currentA, 2) }}</span>
-                    <span class="kv-unit">A</span>
-                  </span>
-                </div>
-                <div class="kv">
-                  <span class="kv-label">剩余容量</span>
-                  <span class="kv-num">
-                    <span class="num">{{ fmt(remainAh, 2) }}</span>
-                    <span class="kv-unit">AH</span>
-                  </span>
-                </div>
-                <div class="kv">
-                  <span class="kv-label">负载功率</span>
-                  <span class="kv-num">
-                    <span class="num">{{ fmt(powerW, 2) }}</span>
-                    <span class="kv-unit">W</span>
-                  </span>
-                </div>
-                <div class="kv">
-                  <span class="kv-label">满充容量</span>
-                  <span class="kv-num">
-                    <span class="num">{{ fmt(fullChargeAh, 2) }}</span>
-                    <span class="kv-unit">AH</span>
-                  </span>
-                </div>
-                <div class="kv kv--toggle">
-                  <span class="kv-label">充电开关</span>
-                  <el-switch :model-value="chargeSwitch" disabled size="default" />
-                </div>
-                <div class="kv kv--toggle">
-                  <span class="kv-label">放电开关</span>
-                  <el-switch :model-value="dischargeSwitch" disabled size="default" />
-                </div>
-              </div>
-            </div>
+      <div class="colstack">
+        <!-- 电池概览 -->
+        <div class="card">
+          <div class="hd">
+            <span class="t">电池概览</span>
+            <span class="aux">
+              <span class="chip" :class="allNormal ? 'ok' : 'err'">
+                {{ allNormal ? '系统正常' : `${activeProtects.length + activeAlarms.length} 条触发` }}
+              </span>
+            </span>
           </div>
-          <div class="battery-foot">
-            <div class="bf-item bf-item--stack">
-              <div class="bf-label-row">
-                <span class="bf-label">保护状态</span>
-                <span :class="['bf-val', allNormal ? 'state--ok' : 'state--critical']">
-                  {{ allNormal ? '系统正常' : `${activeProtects.length + activeAlarms.length} 条触发` }}
-                </span>
-              </div>
-              <div v-if="allNormal" class="bf-empty">无保护 / 告警事件</div>
-              <div v-else class="chip-row">
-                <span
-                  v-for="p in activeProtects"
-                  :key="`p-${p}`"
-                  class="evt-chip evt-chip--crit"
-                  :title="`protectStatus bit`"
-                >{{ p }}</span>
-                <span
-                  v-for="a in activeAlarms"
-                  :key="`a-${a}`"
-                  class="evt-chip evt-chip--warn"
-                  :title="`alarmStatus bit`"
-                >{{ a }}</span>
-              </div>
+          <div class="bd">
+            <div class="soc-wrap">
+              <div class="soc-bar"><i :style="{ width: socBarPct + '%' }" :class="socBarCls" /></div>
+              <div class="soc-num">{{ rsoc }}<small>%</small></div>
+              <div class="soc-tag">{{ socLabel }}</div>
             </div>
-            <div class="bf-item bf-item--inline">
-              <span class="bf-label">均衡状态：</span>
-              <span :class="['bf-val', balanceClass]">{{ balanceText }}</span>
+            <div class="kv-grid">
+              <div class="kv"><div class="k">总电压</div><div class="v">{{ fmt(totalV, 2) }}<small>V</small></div></div>
+              <div class="kv"><div class="k">电流</div><div class="v" :class="{ neg: currentA < 0 }">{{ fmt(currentA, 2) }}<small>A</small></div></div>
+              <div class="kv"><div class="k">循环次数</div><div class="v">{{ cycleCount }}<small>次</small></div></div>
+              <div class="kv"><div class="k">剩余容量</div><div class="v">{{ fmt(remainAh, 2) }}<small>AH</small></div></div>
+              <div class="kv"><div class="k">负载功率</div><div class="v" :class="{ neg: powerW < 0 }">{{ fmt(powerW, 2) }}<small>W</small></div></div>
+              <div class="kv"><div class="k">满充容量</div><div class="v">{{ fmt(fullChargeAh, 2) }}<small>AH</small></div></div>
             </div>
-          </div>
-        </section>
-
-        <!-- 设备信息 -->
-        <section class="sec dev-sec">
-          <header class="sec-head">
-            <h3 class="sec-title">设备信息</h3>
-          </header>
-          <div class="dev-grid">
-            <div class="kv">
-              <span class="kv-label">芯片类型</span>
-              <span class="kv-val mono">{{ chipTypeName }}</span>
-            </div>
-            <div class="kv">
-              <span class="kv-label">硬件版本</span>
-              <span class="kv-val mono">{{ hwVersion || '—' }}</span>
-            </div>
-          </div>
-        </section>
-
-        <!-- 保护事件表 -->
-        <section class="sec events-sec">
-          <header class="sec-head">
-            <h3 class="sec-title">保护事件次数</h3>
-            <button class="refresh-mini" :title="protecting ? '点击刷新' : '拉取保护事件'" @click="readProtect">
-              <svg viewBox="0 0 12 12"><path d="M2 6a4 4 0 1 1 1.2 2.83M3 9 2 6 5 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
-          </header>
-          <div class="events-grid">
-            <div v-for="e in protectList" :key="e.key" class="evt-row">
-              <span class="evt-name">{{ e.label }}</span>
-              <span class="evt-count">
-                <span class="num">{{ e.count ?? '-' }}</span>
-                <span class="evt-unit">次</span>
+            <div class="ov-foot">
+              <span class="switch-line">充电开关
+                <span class="switch"><input type="checkbox" :checked="chargeSwitch" disabled><span class="tk" /></span>
+              </span>
+              <span class="switch-line">放电开关
+                <span class="switch"><input type="checkbox" :checked="dischargeSwitch" disabled><span class="tk" /></span>
+              </span>
+              <span class="switch-line">均衡状态 <span class="chip" :class="balanceClass">{{ balanceText }}</span></span>
+              <span v-if="!allNormal" class="chip-row">
+                <span v-for="p in activeProtects" :key="`p-${p}`" class="chip err">{{ p }}</span>
+                <span v-for="a in activeAlarms" :key="`a-${a}`" class="chip warn">{{ a }}</span>
               </span>
             </div>
           </div>
-        </section>
-      </div>
+        </div>
 
-      <!-- ============== 右列 ============== -->
-      <div class="col">
-        <!-- 单体电压 -->
-        <section class="sec cells-sec">
-          <header class="sec-head">
-            <h3 class="sec-title">单体电压</h3>
-            <div class="cells-legend">
-              <span class="leg"><i class="leg-dot leg-dot--eq" />均衡</span>
-              <span class="leg-meta">压差 <span class="num">{{ fmt(pressureDiff, 0) }}</span> mV</span>
-              <span class="leg"><i class="leg-dot leg-dot--max" />最高</span>
-              <span class="leg"><i class="leg-dot leg-dot--min" />最低</span>
-            </div>
-          </header>
-          <div class="cells-grid">
-            <div
-              v-for="(v, i) in cellVoltages"
-              :key="i"
-              :class="['cell-box', cellClass(v, i)]"
-            >
-              <span class="cell-num">{{ pad(i + 1) }}</span>
-              <span class="cell-v num">{{ fmt(v / 1000, 3) }}<span class="cell-unit">V</span></span>
+        <!-- 设备信息 -->
+        <div class="card">
+          <div class="hd"><span class="t">设备信息</span></div>
+          <div class="bd">
+            <div class="kv-grid dev-grid">
+              <div class="kv"><div class="k">芯片类型</div><div class="v v-sm">{{ chipTypeName }}</div></div>
+              <div class="kv"><div class="k">硬件版本</div><div class="v v-sm">{{ hwVersion || '—' }}</div></div>
+              <div class="kv"><div class="k">电池串数</div><div class="v v-sm">{{ cellCount }} <small>串</small></div></div>
+              <div class="kv"><div class="k">温度探头</div><div class="v v-sm">{{ temperatures.length }} <small>个</small></div></div>
             </div>
           </div>
-        </section>
+        </div>
 
-        <!-- 温度 -->
-        <section class="sec temp-sec">
-          <h3 class="sec-title">温度</h3>
-          <div class="temp-body">
-            <DonutTemp :value="mosTemp" label="MOS" />
-            <div class="temp-bars">
-              <div v-for="(t, i) in temperatures" :key="i" class="temp-bar" :class="tempBarClass(t)">
-                <span class="tb-name">温度{{ i + 1 }}</span>
-                <div class="tb-track">
-                  <div class="tb-fill" :style="{ width: tempPct(t) + '%' }" />
-                </div>
-                <span class="tb-val">
-                  <span class="num">{{ Number.isFinite(t) ? t.toFixed(1) : '--' }}</span>
-                  <span class="tb-unit">℃</span>
-                </span>
+        <!-- 保护事件次数 -->
+        <div class="card">
+          <div class="hd">
+            <span class="t">保护事件次数</span>
+            <span class="aux">
+              累计
+              <button class="refresh-mini" title="拉取保护事件" @click="readProtect">
+                <svg viewBox="0 0 12 12"><path d="M2 6a4 4 0 1 1 1.2 2.83M3 9 2 6 5 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </span>
+          </div>
+          <div class="bd">
+            <div class="evt-grid">
+              <div v-for="e in protectList" :key="e.key" class="evt-kv">
+                <span class="evt-name">{{ e.label }}</span>
+                <span class="evt-count"><span class="num">{{ e.count ?? '-' }}</span> <small>次</small></span>
               </div>
             </div>
           </div>
-        </section>
+        </div>
+      </div>
+
+      <!-- ============== 右列 ============== -->
+      <div class="colstack">
+        <!-- 单体电压 -->
+        <div class="card">
+          <div class="hd">
+            <span class="t">单体电压</span>
+            <span class="aux">
+              <span class="legend">
+                <span><i class="lg-info" />最高</span>
+                <span><i class="lg-ok" />最低</span>
+                <span><i class="lg-eq" />均衡中</span>
+              </span>
+              <span class="delta-txt num">压差 <b>{{ pressureDiff }}</b> mV</span>
+            </span>
+          </div>
+          <div class="bd">
+            <div class="cell-grid">
+              <div
+                v-for="(v, i) in cellVoltages"
+                :key="i"
+                class="cell"
+                :class="cellClass(v, i)"
+              >
+                <span class="n">{{ pad(i + 1) }}</span>
+                <span class="cv">{{ fmt(v / 1000, 3) }} V</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 温度 -->
+        <div class="card">
+          <div class="hd"><span class="t">温度</span></div>
+          <div class="bd temp-body">
+              <div class="mos-dial" :style="dialStyle">
+              <div>
+                <div class="a">{{ basicInfo && mosTemp != null && Number.isFinite(mosTemp) ? mosTemp.toFixed(1) + '℃' : '--' }}</div>
+                <div class="b">MOS 温度</div>
+              </div>
+            </div>
+            <div class="temp-rows">
+              <div v-for="(t, i) in temperatures" :key="i" class="temp-row" :class="{ hot: t > 45 }">
+                <span class="nm">温度{{ i + 1 }}</span>
+                <div class="tr"><i :style="{ width: tempPct(t) + '%' }" /></div>
+                <span class="tv">{{ Number.isFinite(t) ? t.toFixed(1) : '--' }} ℃</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -198,17 +142,14 @@
 
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
 import { useJbd } from '@/jbd/useJbd'
-import BatteryMeter from './BatteryMeter.vue'
-import DonutTemp from './DonutTemp.vue'
 import { PROT_QUERY_INTERVAL_MS } from '../constants'
 
 const j = useJbd()
 const {
   connected, basicInfo, cellVoltages, protectList, cellMax, cellMin,
-  maxTemp, socStatus, tempStatus, autoPollProxy, cellClass, fmt, pad,
-  chipTypeName, hwVersion,
+  maxTemp, socStatus, socLabel, cellClass, fmt, pad,
+  chipTypeName, hwVersion, batchBusy,
   activeProtects, activeAlarms,
   readBasic, readCells, readProtect, readChip, readHw,
 } = j
@@ -230,11 +171,11 @@ const mosTemp = computed(() => {
   if (!t.length) return maxTemp.value
   return t[0]
 })
-const protecting      = computed(() => !!(activeProtects.value.length + activeAlarms.value.length))
 const pressureDiff    = computed(() => cellMax.value && cellMin.value ? cellMax.value - cellMin.value : 0)
+const cellCount       = computed(() => cellVoltages.value.length || 0)
 
 // 保护 / 告警 / 均衡整体状态：全空 → 正常；任一存在 → 异常
-const allNormal      = computed(() => !activeProtects.value.length && !activeAlarms.value.length)
+const allNormal = computed(() => !activeProtects.value.length && !activeAlarms.value.length)
 const balanceText = computed(() => {
   const b = basicInfo.value
   if (!b) return '未启动'
@@ -242,7 +183,17 @@ const balanceText = computed(() => {
 })
 const balanceClass = computed(() => {
   const b = basicInfo.value
-  return (b && (b.balanceLow || b.balanceHigh)) ? 'state--info' : 'state--neutral'
+  return (b && (b.balanceLow || b.balanceHigh)) ? 'ok' : 'gray'
+})
+
+// ===== SOC 条 =====
+const socBarPct = computed(() => Math.max(0, Math.min(100, rsoc.value)))
+const socBarCls = computed(() => (socStatus.value === 'critical' ? 'soc-crit' : socStatus.value === 'warning' ? 'soc-warn' : ''))
+
+// ===== MOS 圆盘（conic 比例同温度条口径：-10℃ ~ 80℃）=====
+const dialStyle = computed(() => {
+  const pct = tempPct(mosTemp.value as number)
+  return { background: `conic-gradient(var(--info) 0 ${pct}%, var(--inset) ${pct}% 100%)` }
 })
 
 // ===== 温度条 =====
@@ -252,351 +203,346 @@ function tempPct(t: number): number {
   if (!Number.isFinite(t)) return 0
   return Math.max(0, Math.min(100, ((t - TEMP_MIN) / (TEMP_MAX - TEMP_MIN)) * 100))
 }
-function tempBarClass(t: number): string {
-  if (!Number.isFinite(t)) return 'tb--na'
-  if (t > 55) return 'tb--crit'
-  if (t > 45) return 'tb--warn'
-  return 'tb--ok'
-}
 
-// ===== 自动轮询（沿用 useJbd 单例 pollTimer，默认开启）=====
-j.onPollChange(true) // 默认开启自动轮询
-function onPollChange(v: boolean | string | number) {
-  j.onPollChange(!!v)
-}
+// ===== 自动更新：页面激活（点开）即全量拉取并持续刷新 =====
+// 基础帧 0x03/0x04/0x00：useJbd pollTimer 每 2s（连接期间常开）；
+// 保护事件 0xAA：本页激活且已连接时每 5s 同步；芯片/硬件信息连接时由 initAfterConnect 读取。
+// 页面用 v-show 常驻，激活状态由 App 传入 active 控制。
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true })
 
-// 附加：自动轮询开启时，同步拉取保护事件（最多每 5s 一次）
-const readProtectOnPoll = ref(true)
+j.onPollChange(true)
+
 let protTimer: number | null = null
-function scheduleProtectRead() {
-  if (protTimer) { clearInterval(protTimer); protTimer = null }
-  if (autoPollProxy.value && readProtectOnPoll.value) {
-    protTimer = window.setInterval(() => {
-      if (!connected.value) return
-      readProtect()
-    }, PROT_QUERY_INTERVAL_MS)
-  }
+function startProtTimer() {
+  if (protTimer) return
+  protTimer = window.setInterval(() => {
+    // 参数批量读写下发中跳过，避免 0xAA 帧插进工厂模式帧序列
+    if (!connected.value || batchBusy.value) return
+    readProtect()
+  }, PROT_QUERY_INTERVAL_MS)
 }
-watch(autoPollProxy, scheduleProtectRead)
+function stopProtTimer() {
+  if (protTimer) { clearInterval(protTimer); protTimer = null }
+}
 
-// ===== 全部读取 =====
-const lastPoll = ref('')
+// ===== 全量读取（页面激活时立即拉一次，静态项 readChip/readHw 代价仅 2 帧） =====
 function refreshAll() {
   if (!connected.value) return
   readBasic(); readCells(); readProtect()
   readChip(); readHw()
-  const now = new Date()
-  lastPoll.value = now.toLocaleTimeString('zh-CN', { hour12: false })
 }
 
-// 启动时拉一帧（连接好的话）；挂载/卸载接管轮询生命周期
-const now = new Date()
-let mountedAt = ''
-mountedAt = now.toLocaleTimeString('zh-CN', { hour12: false })
+function syncMonitorLoop() {
+  if (props.active && connected.value) {
+    j.onPollChange(true)
+    j.restartPoll()
+    startProtTimer()
+  } else {
+    // 切走页面即停止全部自动读取（2s/1s 基础轮询 + 5s 保护事件），让出串口总线
+    j.onPollChange(false)
+    stopProtTimer()
+  }
+}
+
+// 点开页面：立即全量拉取 + 恢复自动读取（轮询被链路熔断等状态停掉也能复活）；切走即停
+watch(() => props.active, (on) => {
+  if (on) refreshAll()
+  syncMonitorLoop()
+})
+
 // 连接状态变化时：
 //  - 恢复连接：交由 useJbd 的 pollTimer 接管后续 2s 轮询（初始全量读取已由
 //    useJbd.initAfterConnect 统一串行执行，不再各自抢发导致队列拥挤）；
 //  - 断开：停止轮询（restartPoll 在断开态下会自动清空定时器）。
 watch(connected, (v) => {
-  if (v) {
-    j.restartPoll()
-    scheduleProtectRead()
-  } else {
-    j.restartPoll()
-    if (protTimer) { clearInterval(protTimer); protTimer = null }
-  }
+  j.restartPoll()
+  if (v && props.active) refreshAll()
+  syncMonitorLoop()
 })
+
 onMounted(() => {
-  refreshAll()
-  if (connected.value) { j.restartPoll(); scheduleProtectRead() }
+  if (props.active) refreshAll()
+  j.restartPoll()
+  syncMonitorLoop()
 })
 onUnmounted(() => {
   j.onPollChange(false)
-  if (protTimer) clearInterval(protTimer)
+  stopProtTimer()
 })
 </script>
 
 <style scoped>
 .jbd-panel {
-  padding: var(--space-6);
   height: 100%;
   min-height: 0;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
 }
-.app-compact .jbd-panel { gap: var(--space-4); }
+.jbd-panel :deep(.chip) { display: inline-flex; }
 
-/* ---------- 顶部工具栏 ---------- */
-.vp-toolbar {
-  display: flex; align-items: center; gap: var(--space-4);
-  height: 36px;
-  flex-shrink: 0;
-}
-.vp-meta { font-size: var(--fs-caption); color: var(--text-tertiary); }
-.vp-spacer { flex: 1; }
-.vp-toolbar :deep(.el-checkbox) { color: var(--text-secondary); }
-
-/* ---------- 双列布局 ---------- */
-.monitor-grid {
+/* ===== 双列布局 ===== */
+.mon-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--space-5);
+  gap: 14px;
+  align-items: start;
+  padding-bottom: 4px;
 }
-@media (max-width: 1100px) {
-  .monitor-grid { grid-template-columns: 1fr; }
-}
-.col { display: flex; flex-direction: column; gap: var(--space-5); min-width: 0; }
+.colstack { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
-/* ---------- 通用 sec ---------- */
-.sec {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: var(--space-5);
+/* ===== 卡片 ===== */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
 }
-.sec-head {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: var(--space-4);
+.card > .hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
 }
-.sec-title {
+.card > .hd .t { font-weight: 700; font-size: 13.5px; color: var(--t1); }
+.card > .hd .aux {
+  margin-left: auto;
+  color: var(--t3);
+  font-size: 11.5px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.card > .bd { padding: 12px 14px; }
+
+/* ===== chips ===== */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.chip.err { background: var(--err-weak); color: var(--err); }
+.chip.warn { background: var(--warn-weak); color: var(--warn); }
+.chip.ok { background: var(--ok-weak); color: var(--ok); }
+.chip.gray { background: var(--inset); color: var(--t2); }
+
+/* ===== SOC 条 ===== */
+.soc-wrap { display: flex; align-items: center; gap: 16px; padding: 4px 0 10px; }
+.soc-bar {
+  flex: 1;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--inset);
+  overflow: hidden;
   position: relative;
-  padding-left: 10px;
-  margin: 0;
-  font-size: var(--fs-title);
-  font-weight: var(--fw-semibold);
-  color: var(--text-primary);
 }
-.sec-title::before {
-  content: '';
-  position: absolute; left: 0; top: 4px; bottom: 4px;
-  width: 3px; border-radius: 2px;
-  background: var(--info);
+.soc-bar > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, #2fbf6b, #23a55a);
+  border-radius: 8px;
+  transition: width 0.3s;
 }
-
-/* ============ 电池概览 ============ */
-.battery-sec { padding: var(--space-5); }
-.battery-row {
-  display: flex; align-items: stretch; gap: var(--space-5);
-}
-.battery-info { flex: 1; min-width: 0; }
-
-.info-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-auto-rows: auto;
-  row-gap: var(--space-4);
-  column-gap: var(--space-6);
-}
-.kv {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: var(--space-3);
-  border-bottom: 1px dashed var(--border-subtle);
-  padding-bottom: 6px;
-}
-.kv--empty { visibility: hidden; }
-.kv--toggle { gap: var(--space-2); }
-
-.kv-label {
-  font-size: var(--fs-caption);
-  color: var(--text-secondary);
-  letter-spacing: 0.04em;
-}
-.kv-num {
-  font-family: var(--font-mono);
-  font-weight: var(--fw-semibold);
-  font-variant-numeric: tabular-nums slashed-zero;
-  color: var(--text-primary);
-  display: inline-flex; align-items: baseline; gap: 2px;
-}
-.kv-unit {
-  font-size: var(--fs-caption);
-  color: var(--text-tertiary);
-  margin-left: 2px;
-}
-.kv--neg .num { color: var(--data-temp); }
-
-/* 底部保护 / 均衡状态行 */
-.battery-foot {
-  display: flex; align-items: flex-start; gap: var(--space-8);
-  padding-top: var(--space-4);
-  margin-top: var(--space-4);
-  border-top: 1px dashed var(--border-subtle);
-  flex-wrap: wrap;
-}
-.bf-item { display: flex; align-items: center; gap: 4px; font-size: var(--fs-caption); color: var(--text-secondary); }
-.bf-item--stack  { flex-direction: column; align-items: flex-start; gap: 4px; flex: 1 1 360px; min-width: 0; }
-.bf-item--inline { flex: 0 0 auto; }
-.bf-label        { color: var(--text-tertiary); }
-.bf-label-row    { display: flex; align-items: center; gap: var(--space-3); }
-.bf-val          { font-family: var(--font-mono); font-weight: var(--fw-semibold); }
-.bf-empty        { font-size: var(--fs-caption); color: var(--text-tertiary); }
-.state--ok      { color: var(--ok); }
-.state--warning { color: var(--warning); }
-.state--critical{ color: var(--critical); }
-.state--info    { color: var(--info); }
-.state--neutral { color: var(--text-tertiary); }
-
-/* 保护 / 告警 chip 列表（电池底部状态） */
-.chip-row    { display: flex; flex-wrap: wrap; gap: 4px; }
-.evt-chip    {
-  display: inline-flex; align-items: center;
-  height: 18px; padding: 0 6px;
-  font-size: var(--fs-micro); line-height: 1;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-  white-space: nowrap;
-}
-.evt-chip--crit {
-  color: var(--critical);
-  background: var(--critical-bg);
-  border-color: var(--critical-border);
-}
-.evt-chip--warn {
-  color: var(--warning);
-  background: var(--warning-bg);
-  border-color: var(--warning-border);
-}
-
-/* ============ 设备信息 ============ */
-.dev-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  row-gap: var(--space-4);
-  column-gap: var(--space-6);
-}
-.kv-val {
-  font-family: var(--font-mono);
-  font-weight: var(--fw-semibold);
-  color: var(--text-primary);
+.soc-bar > i.soc-warn { background: linear-gradient(90deg, #f0b04d, #e8a23d); }
+.soc-bar > i.soc-crit { background: linear-gradient(90deg, #f26d70, #e5484d); }
+.soc-num {
+  font-family: var(--mono);
+  font-weight: 800;
+  font-size: 30px;
+  min-width: 96px;
   text-align: right;
-  word-break: break-all;
+  color: var(--t1);
 }
+.soc-num small { font-size: 16px; color: var(--t3); font-weight: 600; }
+.soc-tag { font-size: 12px; color: var(--t3); min-width: 64px; }
 
-/* 刷新小按钮 */
+/* ===== kv 读数 ===== */
+.kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 26px; }
+.kv .k { color: var(--t2); font-size: 12px; margin-bottom: 3px; }
+.kv .v {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 19px;
+  letter-spacing: 0.2px;
+  color: var(--t1);
+  font-variant-numeric: tabular-nums;
+}
+.kv .v.v-sm { font-size: 14px; }
+.kv .v small { font-size: 12px; color: var(--t3); font-weight: 400; margin-left: 3px; }
+.kv .v.neg { color: var(--warn); }
+
+/* 概览底部：开关 / 均衡 / 保护 chips */
+.ov-foot {
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+.switch-line { display: flex; align-items: center; gap: 9px; color: var(--t2); font-size: 12.5px; }
+.chip-row { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+
+/* CSS 开关（preview .switch）*/
+.switch { position: relative; width: 38px; height: 21px; flex: 0 0 38px; cursor: pointer; display: inline-block; }
+.switch input { display: none; }
+.switch .tk {
+  position: absolute;
+  inset: 0;
+  background: var(--border-strong);
+  border-radius: 12px;
+  transition: 0.18s;
+}
+.switch .tk::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: 0.18s;
+}
+.switch input:checked + .tk { background: var(--brand); }
+.switch input:checked + .tk::after { left: 19px; }
+.switch input:disabled + .tk { opacity: 0.55; }
+
+/* ===== 设备信息 ===== */
+.dev-grid { grid-template-columns: 1fr 1fr; gap: 8px 20px; }
+
+/* ===== 保护事件次数 ===== */
 .refresh-mini {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px;
-  background: transparent; color: var(--text-secondary);
-  border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  color: var(--t2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   cursor: pointer;
 }
-.refresh-mini:hover { background: var(--bg-hover); color: var(--info); border-color: var(--info); }
+.refresh-mini:hover { background: var(--hover); color: var(--brand); border-color: var(--brand); }
 .refresh-mini svg { width: 12px; height: 12px; }
-
-/* ============ 保护事件 ============ */
-.events-grid {
+.evt-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px 20px;
+}
+.evt-kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--inset);
+  border-radius: 7px;
+}
+.evt-name { color: var(--t2); font-size: 12px; }
+.evt-count { font-family: var(--mono); font-weight: 700; font-size: 12.5px; color: var(--t1); }
+.evt-count small { color: var(--t3); font-weight: 400; }
+
+/* ===== 单体电压 ===== */
+.legend { display: flex; gap: 14px; color: var(--t3); font-size: 11.5px; align-items: center; }
+.legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+.lg-info { background: var(--info); }
+.lg-ok { background: var(--ok); }
+.lg-eq { background: transparent; border: 1.5px solid var(--ok); }
+.delta-txt { color: var(--err); }
+.delta-txt b { font-weight: 800; }
+.cell-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.cell {
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--inset);
+  min-width: 0;
+}
+.cell .n { color: var(--t3); font-size: 11px; font-family: var(--mono); flex: 0 0 18px; }
+.cell .cv {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 12.5px;
+  margin-left: auto;
+  color: var(--t1);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cell.cell--max { border-color: var(--info); background: var(--info-weak); }
+.cell.cell--min { border-color: var(--ok); background: var(--ok-weak); }
+.cell.cell--eq { box-shadow: inset 0 0 0 1.5px var(--ok); }
+.cell.cell--crit { border-color: var(--err); background: var(--err-weak); }
+.cell.cell--crit .cv { color: var(--err); }
+.cell.cell--warn { border-color: var(--warn); background: var(--warn-weak); }
+.cell.cell--warn .cv { color: var(--warn); }
+
+/* ===== 温度 ===== */
+.temp-body { display: flex; align-items: center; }
+.mos-dial {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  flex: 0 0 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 14px;
+}
+.mos-dial > div {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.mos-dial .a { font-family: var(--mono); font-weight: 800; font-size: 15px; color: var(--t1); }
+.mos-dial .b { font-size: 10.5px; color: var(--t3); }
+.temp-rows { flex: 1; min-width: 0; }
+.temp-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+.temp-row .nm { flex: 0 0 62px; color: var(--t2); font-size: 12.5px; }
+.temp-row .tr {
+  flex: 1;
+  height: 9px;
+  border-radius: 5px;
+  background: var(--inset);
   overflow: hidden;
 }
-.evt-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px var(--space-4);
-  border-bottom: 1px solid var(--border-subtle);
-  border-right: 1px solid var(--border-subtle);
-  font-size: var(--fs-body-sm);
-}
-.evt-row:nth-child(2n) { border-right: none; }
-.evt-row:nth-last-child(-n+2) { border-bottom: none; }    /* 倒数 2 行移除底边 */
-.evt-row:nth-last-child(2):nth-child(odd) {
-  /* 最后一行仅 1 项（11 个），用 ::after 占位隐藏 */
-}
-.evt-row:nth-child(11) { /* 短路次数单独一行左侧 */ }
-.evt-name { color: var(--text-secondary); }
-.evt-count {
-  font-family: var(--font-mono);
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-}
-.evt-unit { font-size: var(--fs-caption); color: var(--text-tertiary); margin-left: 4px; }
-
-/* ============ 单体电压 ============ */
-.cells-legend {
-  display: flex; align-items: center; gap: var(--space-4);
-  font-size: var(--fs-caption);
-  color: var(--text-secondary);
-}
-.leg, .leg-meta { display: inline-flex; align-items: center; gap: 6px; }
-.leg-meta { color: var(--text-tertiary); }
-.leg-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.leg-dot--eq  { background: var(--ok); }
-.leg-dot--max { background: var(--data-voltage); }
-.leg-dot--min { background: var(--data-current); opacity: 0.7; }
-
-.cells-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-}
-.cell-box {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: var(--space-3);
-  padding: 8px var(--space-3);
-  background: var(--bg-base);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  font-size: var(--fs-caption);
-  min-height: 32px;
-}
-.cell-num { color: var(--text-tertiary); font-size: var(--fs-micro); }
-.cell-v {
-  font-family: var(--font-mono);
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-  display: inline-flex; align-items: baseline;
-}
-.cell-unit { color: var(--text-tertiary); margin-left: 2px; font-size: var(--fs-micro); }
-
-.cell--max  { border-color: var(--data-voltage); background: color-mix(in srgb, var(--data-voltage) 14%, transparent); }
-.cell--min  { border-color: var(--data-current); background: color-mix(in srgb, var(--data-current) 10%, transparent); }
-.cell--crit { border-color: var(--critical); background: var(--critical-bg); color: var(--critical); }
-.cell--warn { border-color: var(--warning); background: var(--warning-bg); }
-.cell--eq   { box-shadow: inset 0 0 0 1px var(--ok); border-color: color-mix(in srgb, var(--ok) 60%, var(--border-default)); }
-
-/* ============ 温度 ============ */
-.temp-body {
-  display: flex; align-items: center; gap: var(--space-6);
-}
-.temp-bars {
-  flex: 1;
-  display: flex; flex-direction: column; gap: var(--space-5);
-}
-.temp-bar {
-  display: flex; align-items: center; gap: var(--space-4);
-}
-.tb-name {
-  font-size: var(--fs-body-sm);
-  color: var(--text-secondary);
-  width: 56px;
-  flex-shrink: 0;
-}
-.tb-track {
-  flex: 1;
-  height: 8px;
-  background: var(--bg-inset);
-  border-radius: 4px;
-  overflow: hidden;
-  position: relative;
-}
-.tb-fill {
+.temp-row .tr > i {
+  display: block;
   height: 100%;
-  background: linear-gradient(90deg, var(--data-voltage), var(--data-current));
-  border-radius: 4px;
-  transition: width 600ms var(--ease-standard);
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--info), #39c6f5);
+  transition: width 0.3s;
 }
-.tb-val {
-  font-family: var(--font-mono);
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-  display: inline-flex; align-items: baseline;
-  min-width: 64px; justify-content: flex-end;
+.temp-row .tv {
+  flex: 0 0 66px;
+  text-align: right;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--t1);
 }
-.tb-unit { color: var(--text-tertiary); margin-left: 2px; font-size: var(--fs-caption); }
+.temp-row.hot .tr > i { background: linear-gradient(90deg, var(--warn), var(--err)); }
+.temp-row.hot .tv { color: var(--err); }
 
-.tb--warn .tb-fill { background: linear-gradient(90deg, var(--warning), var(--data-temp)); }
-.tb--crit .tb-fill { background: linear-gradient(90deg, var(--critical), var(--data-temp)); }
+@media (max-width: 1100px) {
+  .mon-grid { grid-template-columns: 1fr; }
+}
 </style>

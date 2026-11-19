@@ -1,3 +1,69 @@
+<!--
+  DispatchLog — 下发记录页（基准：design/preview.html 页面 4）
+  强制下发本地历史表格：搜索 / 刷新 / 清空 / 删除 / 展开参数明细（subtable）。
+-->
+<template>
+  <div class="page-dlog">
+    <div class="card">
+      <div class="hd">
+        <span class="t">强制下发记录</span>
+        <span class="aux">本地 JSON 持久化 · 断电不丢失</span>
+      </div>
+      <div class="bd">
+        <div class="searchbar">
+          <input v-model="keyword" type="text" placeholder="搜索 蓝牙名称 / 参数名 / 值" class="sb-input">
+          <button class="btn sm" @click="onRefresh">刷新</button>
+          <button class="btn sm danger-plain" :disabled="!records.length" @click="onClear">清空记录</button>
+          <span class="sb-meta num">共 {{ filtered.length }} 条</span>
+        </div>
+
+        <div v-if="!filtered.length" class="empty">暂无下发记录（点击「产线下发 → 强制下发」后自动生成）</div>
+        <table v-else class="table">
+          <thead>
+            <tr>
+              <th style="width:52px">#</th>
+              <th style="width:180px">时间</th>
+              <th>蓝牙名称</th>
+              <th style="width:96px">参数项数</th>
+              <th style="width:150px">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="(r, i) in filtered" :key="r.id">
+              <tr class="row">
+                <td class="num">{{ i + 1 }}</td>
+                <td class="num">{{ fmtTime(r.time) }}</td>
+                <td class="num bt-name">{{ r.btName }}</td>
+                <td style="text-align:center">{{ r.params.length }}</td>
+                <td>
+                  <span class="link" @click="toggleDetail(r.id)">{{ expanded.has(r.id) ? '收起' : '查看参数' }}</span>
+                  <span class="link del" @click="onRemove(r.id)">删除</span>
+                </td>
+              </tr>
+              <tr v-if="expanded.has(r.id)" class="detail-row">
+                <td colspan="5">
+                  <div class="detail-title">下发参数（{{ r.params.length }} 项）</div>
+                  <div class="subtable-wrap">
+                    <table class="subtable">
+                      <tbody>
+                        <tr v-for="(p, pi) in r.params" :key="pi">
+                          <td>{{ p.label }}</td>
+                          <td class="num">{{ regHex(p) }}</td>
+                          <td class="num">{{ fmtValue(p.value) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</template>
+
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -11,6 +77,7 @@ import {
 
 const records = ref<DispatchRecord[]>([])
 const keyword = ref('')
+const expanded = ref(new Set<string>())
 
 function load() {
   records.value = getDispatchRecords()
@@ -29,6 +96,13 @@ const filtered = computed(() => {
       ),
   )
 })
+
+function toggleDetail(id: string) {
+  const next = new Set(expanded.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expanded.value = next
+}
 
 function fmtTime(t: number): string {
   const d = new Date(t)
@@ -60,6 +134,7 @@ async function onClear() {
     return
   }
   clearDispatchRecords()
+  expanded.value = new Set()
   load()
   ElMessage.success('已清空全部记录')
 }
@@ -71,104 +146,81 @@ async function onRemove(id: string) {
     return
   }
   removeDispatchRecord(id)
+  const next = new Set(expanded.value)
+  next.delete(id)
+  expanded.value = next
   load()
 }
 </script>
 
-<template>
-  <div class="dispatch-log">
-    <div class="dl-toolbar">
-      <div class="dl-title">强制下发记录</div>
-      <div class="dl-actions">
-        <el-input
-          v-model="keyword"
-          placeholder="搜索 蓝牙名称 / 参数名 / 值"
-          clearable
-          size="default"
-          style="width: 260px"
-        />
-        <el-button @click="onRefresh">刷新</el-button>
-        <el-button type="danger" plain :disabled="!records.length" @click="onClear">
-          清空记录
-        </el-button>
-      </div>
-    </div>
-    <div class="dl-meta">共 {{ records.length }} 条记录（本地保存，断电不丢失）</div>
-
-    <el-table
-      :data="filtered"
-      stripe
-      style="width: 100%"
-      empty-text="暂无下发记录（点击「参数配置 → 强制下发」后自动生成）"
-    >
-      <el-table-column type="expand">
-        <template #default="{ row }">
-          <div class="dl-detail">
-            <div class="dl-detail-title">下发参数（{{ row.params.length }} 项）</div>
-            <el-table :data="row.params" size="small" :border="false" max-height="340">
-              <el-table-column prop="label" label="参数" min-width="180" />
-              <el-table-column label="寄存器" width="96">
-                <template #default="{ row: p }">{{ regHex(p as DispatchParam) }}</template>
-              </el-table-column>
-              <el-table-column label="下发值" min-width="160">
-                <template #default="{ row: p }">{{ fmtValue(p.value) }}</template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </template>
-      </el-table-column>
-
-      <el-table-column type="index" label="#" width="48" />
-      <el-table-column label="时间" min-width="170">
-        <template #default="{ row }">{{ fmtTime(row.time) }}</template>
-      </el-table-column>
-      <el-table-column prop="btName" label="蓝牙名称" min-width="150" show-overflow-tooltip />
-      <el-table-column label="参数项数" width="100" align="center">
-        <template #default="{ row }">{{ row.params.length }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="90" fixed="right">
-        <template #default="{ row }">
-          <el-button type="danger" link size="small" @click="onRemove(row.id)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-  </div>
-</template>
-
 <style scoped>
-.dispatch-log {
-  padding: 16px 20px;
+.page-dlog {
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
+  min-height: 0;
+  overflow-y: auto;
 }
-.dl-toolbar {
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.card > .hd {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 12px;
-}
-.dl-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-.dl-actions {
-  display: flex;
   gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
 }
-.dl-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-  margin: 8px 0 6px;
+.card > .hd .t { font-weight: 700; font-size: 13.5px; color: var(--t1); }
+.card > .hd .aux { margin-left: auto; color: var(--t3); font-size: 11.5px; }
+.card > .bd { padding: 12px 14px; }
+
+/* 搜索条 */
+.searchbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.sb-input {
+  width: 280px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  outline: none;
 }
-.dl-detail {
-  padding: 6px 14px 10px;
+.sb-input:focus { border-color: var(--brand); }
+.sb-meta { color: var(--t3); font-size: 12px; }
+
+.empty {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--t3);
+  font-size: 12.5px;
 }
-.dl-detail-title {
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
-  margin-bottom: 6px;
+
+/* preview .table */
+.table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.table th {
+  text-align: left;
+  color: var(--t2);
+  font-weight: 600;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--inset);
+  white-space: nowrap;
 }
+.table td { padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--t1); }
+/* .num 全局右对齐约定在表格单元格中回到左对齐（对齐设计稿） */
+.table td.num { text-align: left; }
+.table tr.row:hover td { background: var(--hover); }
+.table .bt-name { font-weight: 700; }
+.table .link { color: var(--brand); cursor: pointer; font-weight: 600; margin-right: 12px; }
+.table .link.del { color: var(--err); }
+.detail-row td { background: var(--inset); padding: 10px 14px; }
+.detail-title { color: var(--t2); font-size: 12px; margin-bottom: 6px; }
+.subtable-wrap { max-height: 340px; overflow-y: auto; }
+.subtable { width: 100%; border-collapse: collapse; font-size: 12px; }
+.subtable td { padding: 6px 10px; border-bottom: 1px dashed var(--border); color: var(--t1); }
+.subtable td:first-child { color: var(--t2); }
+.subtable tr:last-child td { border-bottom: none; }
 </style>

@@ -1,5 +1,5 @@
 /* =========================================================================
- * 全局基础样式（VOLTGRID Industrial Dark）
+ * 全局基础样式（基准：design/preview.html）
  * ========================================================================= */
 * {
   margin: 0;
@@ -10,40 +10,125 @@
 html, body, #app {
   height: 100%;
   font-family: var(--font-sans);
-  color: var(--text-primary);
-  background: var(--bg-canvas);
+  color: var(--t1);
+  background: var(--bg);
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
 body {
-  font-size: var(--fs-body-sm);
   line-height: 1.5;
+  overflow: hidden;
 }
 
-/* 全局滚动条（DESIGN 6.2：以边框为主，细滚动条）*/
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/* 紧凑密度：整体缩小间距刻度（设置弹窗开关，html.app-compact） */
+html.app-compact {
+  --space-6: 12px;
+  --space-5: 10px;
+  --space-4: 6px;
 }
-::-webkit-scrollbar-track {
-  background: var(--bg-canvas);
+
+button { font-family: inherit; cursor: pointer; }
+input, select, textarea { font-family: inherit; color: var(--t1); }
+
+/* 全局滚动条（preview：9px / border-strong 圆角）*/
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
-  border-radius: var(--radius-pill);
+  border-radius: 5px;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-tertiary);
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) var(--bg-canvas);
+  scrollbar-color: var(--border-strong) transparent;
 }
 
-/* 等宽字体用于数据展示 */
-.mono-font {
+/* 等宽数值（DESIGN 9.1：数值全部走 .num，右对齐为项目既有约定）*/
+.num {
   font-family: var(--font-mono);
-  font-size: var(--fs-num-sm);
+  font-variant-numeric: tabular-nums slashed-zero;
+  text-align: right;
+  font-feature-settings: var(--font-numeric-features);
+}
+.mono-font,
+.mono {
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums slashed-zero;
 }
+.unit {
+  font-size: var(--fs-micro);
+  color: var(--t3);
+  margin-left: var(--space-2);
+}
+
+/* 面板基类（存量组件引用）*/
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-bold);
+  color: var(--t1);
+}
+.panel-title .el-icon,
+.panel-title svg { color: var(--brand); }
+
+.eyebrow {
+  font-size: var(--fs-label);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.06em;
+  color: var(--t2);
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+/* =========================================================
+ * 按钮体系（preview .btn）—— 全局：子组件（参数配置/产线下发等）同样使用
+ * （原在 App.vue scoped 内，子组件内部按钮拿不到基础样式；2026-11-19 迁出）
+ * ========================================================= */
+.btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--t1);
+  border-radius: 8px;
+  padding: 7px 15px;
+  font-size: 12.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: filter 0.12s, background 0.12s;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--hover); }
+.btn svg { width: 14px; height: 14px; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+.btn.primary:hover { filter: brightness(1.08); background: var(--brand); }
+.btn.warn { background: var(--warn); border-color: var(--warn); color: #fff; }
+.btn.warn:hover { filter: brightness(1.06); background: var(--warn); }
+.btn.danger { background: var(--err); border-color: var(--err); color: #fff; }
+.btn.danger:hover { filter: brightness(1.06); background: var(--err); }
+.btn.danger-plain { background: transparent; color: var(--err); border-color: var(--err); }
+.btn.danger-plain:hover { background: var(--err-weak); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--t2); }
+.btn.ghost:hover { background: var(--hover); color: var(--t1); }
+.btn.ghost-on { color: var(--brand); }
+.btn.sm { padding: 5px 11px; font-size: 12px; border-radius: 7px; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:disabled:hover { filter: none; }
+

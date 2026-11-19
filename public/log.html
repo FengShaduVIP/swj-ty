@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>通讯日志</title>
+  <!--
+    通讯日志独立窗口（Electron BrowserWindow 载入，经 preload 暴露的 logWinAPI 通信）
+    纯被动显示：主窗口经 log:append 推送条目、log:clear 清空；清空请求回传主窗中转。
+    主题跟随主窗口：直接读 localStorage['theme'] + storage 事件同步（同源共享）。
+  -->
+  <style>
+    :root {
+      --surface:#ffffff; --inset:#f6f8fa; --border:#e2e5ea; --border-strong:#cdd1d9;
+      --t1:#1f2329; --t2:#5c6470; --t3:#98a0ac;
+      --brand:#1f6fe0; --ok:#23a55a; --err:#e5484d;
+      --mono:"Consolas","JetBrains Mono",monospace;
+    }
+    [data-theme="dark"] {
+      --surface:#1c1e23; --inset:#24262c; --border:#32353d; --border-strong:#43464f;
+      --t1:#e9ebef; --t2:#a6adba; --t3:#6d7480;
+      --brand:#4a8dfd; --ok:#4cc376; --err:#f26d70;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      display: flex; flex-direction: column;
+      background: var(--surface); color: var(--t1);
+      font-family: "Microsoft YaHei UI", "PingFang SC", "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+    .hd {
+      flex: 0 0 42px; display: flex; align-items: center; gap: 8px;
+      padding: 0 12px; border-bottom: 1px solid var(--border); user-select: none;
+    }
+    .hd .t { font-weight: 700; font-size: 13px; }
+    .hd .chip {
+      background: var(--inset); color: var(--t2);
+      padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600;
+      font-family: var(--mono);
+    }
+    .hd .sp { flex: 1; }
+    .hd button {
+      border: 1px solid var(--border); background: transparent; color: var(--t2);
+      font-size: 12px; padding: 3px 10px; border-radius: 7px; cursor: pointer;
+    }
+    .hd button:hover { color: var(--t1); border-color: var(--border-strong); }
+    .logbox {
+      flex: 1; overflow-y: auto; padding: 8px 10px;
+      font-family: var(--mono); font-size: 11.5px; line-height: 1.9;
+      background: var(--inset);
+    }
+    .logline { display: flex; gap: 8px; white-space: nowrap; }
+    .logline .tm { color: var(--t3); flex: 0 0 74px; }
+    .logline .tag { flex: 0 0 26px; font-weight: 700; color: var(--t3); }
+    .logline.tx .tag { color: var(--brand); }
+    .logline.rx .tag { color: var(--ok); }
+    .logline.er .tag { color: var(--err); }
+    .logline.tx .tx2 { color: var(--t2); }
+    .logline.rx .tx2 { color: var(--t1); }
+    .logline.er .tx2 { color: var(--err); }
+    .tx2 { overflow: hidden; text-overflow: ellipsis; }
+    .df {
+      flex: 0 0 auto; padding: 8px 12px; border-top: 1px solid var(--border);
+      color: var(--t3); font-size: 11px; user-select: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="hd">
+    <span class="t">通讯日志</span>
+    <span class="chip" id="count">0 / 0</span>
+    <div class="sp"></div>
+    <button id="clearBtn">清空</button>
+  </div>
+  <div class="logbox" id="logbox"></div>
+  <div class="df" id="df">TX 蓝色 · RX 绿色 · 错误红色</div>
+
+  <script>
+    let MAX = 500 // 缺省兜底；实际由主进程按 src/constants.LOG_MAX_LINES 下发
+    const logbox = document.getElementById('logbox')
+    const countEl = document.getElementById('count')
+    const dfEl = document.getElementById('df')
+    const TAGS = { send: 'TX', recv: 'RX', error: 'ER', info: 'IN' }
+
+    function updateMeta() {
+      countEl.textContent = logbox.childElementCount + ' / ' + MAX
+      dfEl.textContent = `TX 蓝色 · RX 绿色 · 错误红色 · 最多保留 ${MAX} 条，超出丢弃最旧`
+    }
+
+    function appendLines(lines) {
+      const frag = document.createDocumentFragment()
+      for (const l of lines) {
+        const row = document.createElement('div')
+        row.className = 'logline ' + (l.type === 'send' ? 'tx' : l.type === 'recv' ? 'rx' : l.type === 'error' ? 'er' : '')
+        const tm = document.createElement('span'); tm.className = 'tm'; tm.textContent = l.time
+        const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = TAGS[l.type] || 'IN'
+        const tx = document.createElement('span'); tx.className = 'tx2'; tx.textContent = l.content
+        row.append(tm, tag, tx)
+        frag.appendChild(row)
+      }
+      logbox.appendChild(frag)
+      const excess = logbox.childElementCount - MAX
+      if (excess > 0) {
+        for (let i = 0; i < excess; i++) logbox.firstElementChild.remove()
+      }
+      updateMeta()
+      logbox.scrollTop = logbox.scrollHeight
+    }
+
+    // 容量常量（主进程按 src/constants 下发）+ 回填 + 后续推送（经 preload 桥接）
+    window.logWinAPI.onCfg((cfg) => {
+      if (cfg && typeof cfg.maxLines === 'number' && cfg.maxLines > 0) MAX = cfg.maxLines
+      updateMeta()
+    })
+    window.logWinAPI.onAppend(appendLines)
+    window.logWinAPI.onClear(() => { logbox.textContent = ''; updateMeta() })
+    document.getElementById('clearBtn').addEventListener('click', () => window.logWinAPI.requestClear())
+
+    // 主题跟随主窗口：localStorage 初值 + storage 事件（同源），IPC 推送兜底（file:// 打包场景）
+    function applyTheme(dark) {
+      document.documentElement.dataset.theme = dark ? 'dark' : ''
+    }
+    applyTheme(localStorage.getItem('theme') === 'dark')
+    window.addEventListener('storage', applyTheme)
+    window.logWinAPI.onTheme(applyTheme)
+  </script>
+</body>
+</html>

@@ -66,7 +66,7 @@ export function pushSample() {
   ui.sampleCount++
 }
 
-/** 通信日志条目（App 生成，DataLog/SerialPanel 展示；id 为自增序号，作 v-for key） */
+/** 通信日志条目（App 生成，通讯日志抽屉展示；id 为自增序号，作 v-for key） */
 export interface LogEntry {
   id: number
   time: string

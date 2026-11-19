@@ -141,6 +141,27 @@ interface BmsAPI {
   verifyDispatchPwd: (candidate: string) => Promise<boolean>
 }
 
+/** 无边框窗口控制（注入自 preload.ts，标题栏自绘用） */
+interface WinAPI {
+  minimize: () => Promise<{ ok: boolean }>
+  toggleMaximize: () => Promise<{ ok: boolean }>
+  close: () => Promise<{ ok: boolean }>
+  onMaximizedChange: (callback: (maximized: boolean) => void) => void
+}
+
+/** 通讯日志独立窗口（注入自 preload.ts；浏览器 H5 预览无此 API，降级页内浮窗） */
+interface LogWinAPI {
+  open: () => Promise<{ ok: boolean }>
+  push: (lines: { id: number; time: string; type: string; content: string }[]) => void
+  onReady: (callback: () => void) => void
+  onAppend: (callback: (lines: { id: number; time: string; type: string; content: string }[]) => void) => void
+  onClear: (callback: () => void) => void
+  requestClear: () => void
+  onCfg: (callback: (cfg: { maxLines: number }) => void) => void
+  setTheme: (dark: boolean) => void
+  onTheme: (callback: (dark: boolean) => void) => void
+}
+
 interface Window {
   serialAPI: SerialAPI
   updaterAPI: UpdaterAPI
@@ -148,4 +169,6 @@ interface Window {
   authAPI: BackendAuthAPI
   dispatchAPI: DispatchAPI
   bmsAPI: BmsAPI
+  winAPI?: WinAPI
+  logWinAPI?: LogWinAPI
 }

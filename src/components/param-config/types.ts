@@ -1,7 +1,7 @@
 /** JbdParamConfig 参数配置页的共享类型（自 JbdParamConfig.vue 拆出，便于多文件复用） */
 
 export type FieldStatus = 'idle' | 'reading' | 'writing' | 'ok' | 'fail'
-export type CustomDisplayKind = 'chipType' | 'hwVersion' | 'ntcCount' | 'balanceMode' | 'date' | 'serialRaw'
+export type CustomDisplayKind = 'chipType' | 'hwVersion' | 'ntcCount' | 'balanceMode' | 'date' | 'serialRaw' | 'resetCount'
 
 export interface FieldDef {
   label: string
@@ -31,8 +31,10 @@ export interface FieldDef {
   /** 下拉选项字段：value 为下发到 BMS 的原始寄存器值 */
   options?: { label: string; value: number }[]
   /** 复合保护字段：单个寄存器 16 位，低字节高半字节=保护值档位(level)、低半字节=延迟档位(delay) */
-  kind?: 'scd'
+  kind?: 'scd' | 'hvd'
   scdPart?: 'level' | 'delay'
+  /** 硬件过欠压延时字段（reg42）：kind='hvd'；hvdPart=低字节过压延时(ov) / 高字节欠压延时(uv)，单位 s 直填 */
+  hvdPart?: 'ov' | 'uv'
   /** 下发前需要输入密码校验（如检流阻值） */
   needPassword?: boolean
 }
@@ -52,7 +54,16 @@ export interface GroupAction {
 
 export interface GroupObj {
   title: string
-  cols?: number
+  /** JBDTools 固定列位（1/2/3） */
+  col?: 1 | 2 | 3
+  /** 组内行形态：rows=单字段行 / triple=保护·恢复·延时三段行 / bits=位开关栅格 */
+  layout?: 'rows' | 'triple' | 'bits'
+  /** 组头寄存器范围标注（如 reg 8~55）；UI 不再渲染，仅作数据文档 */
+  regRange?: string
+  /** rows 组内部两列排布（压缩长列表，如容量配置 SOC 表） */
+  twoCol?: boolean
+  /** rows 组内字段两两一行（如高级保护：过压|欠压、scd 档位成对） */
+  pair?: boolean
   action?: GroupAction
   fields: FieldState[]
 }
