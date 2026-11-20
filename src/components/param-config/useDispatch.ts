@@ -498,15 +498,15 @@ function frameWords(resp: Frame | null, count: number): number[] | null {
 function rawOfField(f: FieldState): number {
   if (f.value == null) return 0
   if (f.kind === 'hvd') {
-    // reg42 硬件过欠压延时：低字节=过压延时(s)、高字节=欠压延时(s)，直填秒数
+    // reg42 硬件过欠压延时（凹凸 7717 实测）：bit0-1=过压延时档、bit2-4=欠压延时档，值=2^档位 秒；bit5+ 保留
     const peer = scdPeer(f)
-    const self = Number(f.value) & 0xff
-    const peerByte = peer && peer.value != null ? Number(peer.value) & 0xff : 0
-    const ov = f.hvdPart === 'ov' ? self : peerByte
-    const uv = f.hvdPart === 'uv' ? self : peerByte
-    return ((uv << 8) | ov) & 0xffff
-  }
-  if (f.kind === 'scd') {
+    const self = Number(f.value) & 0x07
+    const peerGear = peer && peer.value != null ? Number(peer.value) & 0x07 : 0
+    const ovGear = f.hvdPart === 'ov' ? self : peerGear
+    const uvGear = f.hvdPart === 'uv' ? self : peerGear
+    const keep = regMirror.value[42] ?? 0
+    return ((keep & 0xffe0) | (uvGear << 2) | ovGear) & 0xffff
+  } if (f.kind === 'scd') {
     const peer = scdPeer(f)
     const peerVal = peer && peer.value != null ? Number(peer.value) : 0
     const selfVal = Number(f.value)
@@ -560,7 +560,7 @@ function syncAllFromMirror() {
         const parts = splitScd(raw)
         f.value = f.scdPart === 'delay' ? parts.delay : parts.level
       } else if (f.kind === 'hvd') {
-        f.value = f.hvdPart === 'uv' ? (raw >> 8) & 0xff : raw & 0xff
+        f.value = f.hvdPart === 'uv' ? (raw >> 2) & 0x07 : raw & 0x03
       } else if (f.customDisplay === 'date' || f.customDisplay === 'serialRaw') {
         f.value = raw
       } else {
@@ -615,7 +615,7 @@ function syncFieldsInSegments(segs: Segment[]) {
         const parts = splitScd(raw)
         f.value = f.scdPart === 'delay' ? parts.delay : parts.level
       } else if (f.kind === 'hvd') {
-        f.value = f.hvdPart === 'uv' ? (raw >> 8) & 0xff : raw & 0xff
+        f.value = f.hvdPart === 'uv' ? (raw >> 2) & 0x07 : raw & 0x03
       } else if (f.customDisplay === 'date' || f.customDisplay === 'serialRaw') {
         f.value = raw
       } else {
@@ -1092,6 +1092,22 @@ function applyImport(list: ImportedParam[]) {
         appliedFields.add(peer)
       }
       p.current = currentLevel
+      continue
+    }
+    // reg42 硬件过欠压延时：raw 档位拆到 过压延时(bit0-1)/欠压延时(bit2-4) 两个字段
+    if (def.kind === 'hvd') {
+      const peer = scdPeer(def)
+      const ov = p.raw & 0x03
+      const uv = (p.raw >> 2) & 0x07
+      if (!appliedFields.has(def)) {
+        def.value = def.hvdPart === 'uv' ? uv : ov; def.dirty = true; def.status = 'idle'
+        appliedFields.add(def)
+      }
+      if (peer && !appliedFields.has(peer)) {
+        peer.value = peer.hvdPart === 'uv' ? uv : ov; peer.dirty = true; peer.status = 'idle'
+        appliedFields.add(peer)
+      }
+      p.current = null
       continue
     }
     // reg42 硬件过欠压延时：raw 高/低字节拆到 过压延时/欠压延时 两个字段

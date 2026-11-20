@@ -67,27 +67,26 @@
       </button>
     </div>
 
-    <!-- ============ 主体：Rail + 页面 ============ -->
-    <div class="layout">
-      <nav class="rail">
-        <button
-          v-for="v in views"
-          :key="v.key"
-          class="item"
-          :class="{ active: active === v.key }"
-          @click="active = v.key"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <template v-if="v.key === 'monitor'"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></template>
-            <template v-else-if="v.key === 'config'"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></template>
-            <template v-else><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></template>
-          </svg>
-          {{ v.title }}
+    <!-- ============ 主体：头部页签 + 页面 ============ -->
+    <nav class="tabs">
+      <button
+        v-for="v in views"
+        :key="v.key"
+        class="tab"
+        :class="{ active: active === v.key }"
+        @click="active = v.key"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <template v-if="v.key === 'monitor'"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></template>
+          <template v-else-if="v.key === 'config'"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></template>
+          <template v-else><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></template>
+        </svg>
+        {{ v.title }}
           <span v-if="v.key === 'monitor' && ui.alarmCount" class="cnt">{{ ui.alarmCount }}</span>
-        </button>
-      </nav>
+      </button>
+    </nav>
 
-      <main class="work">
+    <main class="work">
         <!-- 页面 1：实时监测（active 控制自动刷新循环） -->
         <JbdPanel v-show="active === 'monitor'" :active="active === 'monitor'" />
         <!-- 页面 2：参数配置 -->
@@ -95,7 +94,6 @@
         <!-- 页面 3：下发记录 -->
         <DispatchLog v-show="active === 'log'" />
       </main>
-    </div>
 
     <!-- ============ 底部状态条（h28 · preview 基准）============ -->
     <footer class="statusbar">
@@ -431,6 +429,8 @@ async function handleRefreshPorts(): Promise<SerialPortInfo[]> {
   try {
     const list = await window.serialAPI.listPorts()
     ports.value = list
+    // 默认选中第一个串口（未手选时）
+    if (!topPort.value && list.length) topPort.value = list[0].path
     addLog('info', `刷新串口列表: 找到 ${list.length} 个串口`)
     return list
   } catch (err: any) {
@@ -625,7 +625,8 @@ onUnmounted(() => {
   flex-direction: column;
   height: 100vh;
   min-width: 1180px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: var(--bg);
   color: var(--t1);
 }
@@ -726,62 +727,69 @@ onUnmounted(() => {
 
 /* .btn 按钮体系已迁至全局 style.css（子组件同样使用） */
 
-/* ============ 主体布局 ============ */
-.layout { flex: 1; display: flex; min-height: 0; }
-.rail {
-  width: var(--w-rail);
-  flex: 0 0 var(--w-rail);
+/* ============ 头部页签 ============ */
+.tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 6px 12px 0;
   background: var(--surface);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  padding: 10px 8px;
-  gap: 2px;
+  border-bottom: 1px solid var(--border);
 }
-.rail .item {
-  display: flex;
+.tab {
+  position: relative;
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
+  gap: 7px;
+  padding: 8px 16px 9px;
+  border: none;
+  background: transparent;
   color: var(--t2);
   font-weight: 600;
   font-size: 13px;
-  border: none;
-  background: transparent;
-  text-align: left;
-  position: relative;
+  cursor: pointer;
+  border-radius: 8px 8px 0 0;
+  white-space: nowrap;
 }
-.rail .item svg { width: 17px; height: 17px; flex: 0 0 17px; }
-.rail .item:hover { background: var(--hover); color: var(--t1); }
-.rail .item.active { background: var(--brand-weak); color: var(--brand); }
-.rail .item .cnt {
+.tab svg { width: 16px; height: 16px; }
+.tab:hover { color: var(--t1); background: var(--hover); }
+.tab.active { color: var(--brand); background: var(--hover); }
+.tab.active::after {
+  content: '';
   position: absolute;
+  left: 10px;
   right: 10px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--brand);
+  border-radius: 2px;
+}
+.tab .cnt {
   background: var(--err);
   color: #fff;
   font-size: 10.5px;
   min-width: 16px;
   height: 16px;
   border-radius: 9px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0 4px;
 }
+
+/* ============ 页面工作区 ============ */
 .work {
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 14px 16px;
+  padding: 12px 16px;
   display: flex;
   flex-direction: column;
 }
-.work > * { min-width: 0; }
-
-/* ============ 底部状态条 ============ */
+.work > * { min-width: 0; }/* ============ 底部状态条 ============ */
 .statusbar {
   height: 28px;
   flex: 0 0 28px;

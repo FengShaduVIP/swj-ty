@@ -17,7 +17,7 @@
       {{ f.label }}
     </label>
     <template v-else>
-        <span class="lb" :title="f.label">{{ f.label }}<template v-if="f.needPassword"> 🔒</template></span>
+    <span class="lb" :title="lbTip(f)">{{ f.label }}<template v-if="f.needPassword"> 🔒</template></span>
 
     <!-- ASCII 字段（制造商 / BMS编码 / 条形码） -->
     <input
@@ -49,6 +49,21 @@
     <span v-else-if="f.readOnly" class="ro">{{ f.index !== undefined && f.value != null ? formatFieldValue(f) + (f.unit ? ' ' + f.unit : '') : '—' }}</span>
 
     <!-- 下拉（scd 复合档位） -->
+    <!-- 硬件过欠压延时：档位下拉（2^档位 秒） -->
+    <select
+      v-else-if="f.kind === 'hvd'"
+      class="select"
+      :value="f.value ?? 0"
+      :disabled="busy"
+      @change="onSelectChange(f, ($event.target as HTMLSelectElement).value)"
+    >
+      <option
+        v-for="opt in hvdOptions(f)"
+        :key="opt.value"
+        :value="opt.value"
+      >{{ opt.label }}</option>
+    </select>
+
     <select
       v-else-if="f.kind === 'scd'"
       class="select"
@@ -100,17 +115,33 @@ defineProps<{ fields: FieldState[]; busy: boolean; connected: boolean }>()
 
 const d = useDispatch()
 const {
-  j, numDisplay, onNumEdit, onNumFocus, onNumBlur, onBitChange,
+  j, numDisplay, onNumEdit, onNumFocus, onNumBlur, onBitChange, regMirror,
   formatFieldValue, onAsciiInput, onDateInput, dateInputText,
   customDisplayValue, onSelectChange, scdOptions,
   isReadOnly, shouldShowUnit, canWrite, writeField,
 } = d
 
 /** 行内下发按钮：ASCII 块（Set 语义）与检流电阻（口令例外）；数值字段走整包写入 */
+/** 标签悬停提示：hvd 字段附带 reg42 原始值（调试解码用，确认后可移除） */
+function lbTip(f: FieldState): string {
+  if (f.kind === 'hvd') {
+    const raw = regMirror.value[42]
+    const hex = raw !== undefined ? '（reg42 raw: 0x' + raw.toString(16).toUpperCase().padStart(4, '0') + '）' : '（未读取）'
+    return f.label + hex
+  }
+  return f.label
+}
+
 /** 位开关复选框：先写 f.value 再同步镜像寄存器对应位 */
 function onChkChange(f: FieldState, e: Event) {
   f.value = (e.target as HTMLInputElement).checked
   onBitChange(f)
+}
+
+/** reg42 硬件过欠压延时档位选项：凹凸 7717 过压 4 档(bit0-1)、欠压 5 档(bit2-4)，值 = 2^档位 秒 */
+function hvdOptions(f: FieldState): { label: string; value: number }[] {
+  const seconds = f.hvdPart === 'ov' ? [1, 2, 4, 8] : [1, 2, 4, 8, 16]
+  return seconds.map((s, i) => ({ label: String(s), value: i }))
 }
 
 function needsWriteBtn(f: FieldState): boolean {

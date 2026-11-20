@@ -142,9 +142,6 @@ function exportParams() { confirmThenExportConfig() }
   grid-template-columns: 1fr 1fr;
   column-gap: 14px;
 }
-@media (max-width: 1500px) {
-  .bd.pair { display: block; }
-}
 
 /* 三列布局相关行样式已随组件化迁至 param-config/rows/ 子组件 */
 /* rows 组内部两列（容量配置 SOC 表）：普通行整行，SOC 百分比行半宽两列 */
